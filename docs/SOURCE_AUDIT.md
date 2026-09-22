@@ -1,24 +1,31 @@
-# Source audit — JAF Kernel SM-M146B (22 September 2026)
+# Source audit — corrected using Project-24 Run128 release (22 September 2026)
 
-The **current running image** is `5.15.211-android13-8@MrPankaj24`. A source tree that simply contains an M14 device tree is **not** automatically a matching reproduction of that image.
+## KEY FINDING — actual builder and kernel source located
 
-## Verified public candidates
+The owner provided the release [Project-24 Run128](https://github.com/MrPankaj24/Project-24/releases/tag/P24-m14x-ReSukiSU-Run128). The release metadata lists `m14x_defconfig`, `lineage-23.2`, `llvm22-ccache`, root variant `ReSukiSU`, and SUSFS commit `7af04b08f86a5f811cbea28805f96d52368e005f`. Its three release assets have SHA-256 hashes **identical** to the user's newer kernel, DTB and module ZIPs recorded in the inspection reports. Thus this is the published release for the files inspected earlier, not an unrelated build.
 
-| Repository | Inspected branch | Makefile base | M14 information | Verdict |
-| --- | --- | --- | --- | --- |
-| [MrPankaj24/SM-M146B-Kernel-Source](https://github.com/MrPankaj24/SM-M146B-Kernel-Source) | `main` | **5.15.153** | `arch/arm64/configs/s5e8535-m14xnsxx_defconfig`, Exynos `s5e8535.dtb`, M14 device trees | **Device-specific candidate**, but not the matching 5.15.211 source. |
-| [MrPankaj24/android_kernel_samsung_s5e8535](https://github.com/MrPankaj24/android_kernel_samsung_s5e8535) | `lineage-23.2` | **5.15.209** | Includes `arch/arm64/boot/dts/samsung/m14x/m14x_eur_open_w00_r00.dts` and Exynos DTS; has a `build_kernel.sh` referencing Clang `r450784d` and `TARGET_SOC=s5e8535`. The named M14 defconfig path from the other repo is **not present at that path**. | **Closer base number, not proved to be this device's compiled Project-24 source/configuration.** |
-| [Linux stable 5.15.211](https://www.kernel.org/pub/linux/kernel/v5.x/) | stable tarball | 5.15.211 | No Samsung Project-24 vendor integration by itself | **Not an M14 replacement kernel.** |
+The release's tagged [workflow (`.github/workflows/op.yml`)](https://github.com/MrPankaj24/Project-24/blob/P24-m14x-ReSukiSU-Run128/.github/workflows/op.yml) defaults to:
 
-The owner's two uploaded Project-24 ZIPs, DTBOs, 300 compiled modules and embedded IKCONFIG are useful *reference artifacts* but do not reconstruct the complete 5.15.211 build source. The existing .ko files embed the original kernel release and cannot be rebranded simply by renaming directories.
+- `KERNEL_SOURCE=https://github.com/devhunter1/android_kernel_samsung_s5e8535.git`
+- `KERNEL_BRANCH=lineage-23.2`
+- `DEVICE_DEFCONFIG=m14x_defconfig`
 
-## Next legitimate engineering milestone
+**Verified current source snapshot:** [devhunter1/android_kernel_samsung_s5e8535@906601a25962356b037817ed5deaa483b44b9233](https://github.com/devhunter1/android_kernel_samsung_s5e8535/commit/906601a25962356b037817ed5deaa483b44b9233) has `VERSION=5`, `PATCHLEVEL=15`, `SUBLEVEL=211` and `arch/arm64/configs/m14x_defconfig`. This *resolves the earlier source-version mismatch for an experimental source base*. This SHA is the observed source branch HEAD during inspection, **not independently proved to be the exact source commit used by Run128**, since the original workflow clones a moving branch without pinning its commit.
 
-1. Identify a **full** Project-24 5.15.211 source revision or independently **port and validate** the Samsung M14 vendor/Project-24 modifications from a verified device-specific tree to the intended 5.15.211 Android 13 base. Review the original author's project for published patches and source provenance.
-2. Confirm correct Samsung M14 defconfig and DTS, matching firmware/boot layout, Android Clang revision, modules and ABI baseline.
-3. Reconcile pinned ReSukiSU and SUSFS/Baseband-guard code **in source**, keeping original copyright and accurate attribution.
-4. Compile `Image`, matching `.ko` modules, DTS/DTBO. Run device checks with rollback, *then* build a flashable AnyKernel3 package.
+The Project-24 repository holds a complex build workflow, not the whole kernel C source. It imports the devhunter1 tree, then applies upstream and bespoke root/SUSFS, Baseband-guard, Droidspaces, optimization and other patches before building. Do not assume that cloning the raw devhunter1 tree by itself reproduces the binary. The original workflow contains several `patch ... || true` lines and mutable upstream references; a forked/rebuilt version should pin dependencies, review rejected hunks and fail on essential patch failures.
 
-The generic source-gated script `scripts/prepare-kernel.sh` deliberately stops at an incompatible 5.15.153 or 5.15.209 source when set to expected 5.15.211. Never bypass it by simply editing `SUBLEVEL` in a Makefile: that only changes a version number, not the code.
+## Historical candidate sources (not Run128's identified primary tree)
 
-**Status:** Candidate source repos located, no matching final source confirmed, no new compiled or validated JAF Kernel image.
+| Repository | Inspected branch | Makefile base | Finding |
+| --- | --- | --- | --- |
+| [MrPankaj24/SM-M146B-Kernel-Source](https://github.com/MrPankaj24/SM-M146B-Kernel-Source) | `main` | 5.15.153 | Older device source; not selected by Run128's workflow. |
+| [MrPankaj24/android_kernel_samsung_s5e8535](https://github.com/MrPankaj24/android_kernel_samsung_s5e8535) | `lineage-23.2` | 5.15.209 at inspection | Different fork from Run128's `devhunter1` default; not interchangeable with it. |
+
+## JAF Kernel build path
+
+1. Use the confirmed **devhunter1** source as a pinned starting point, correct `m14x_defconfig`, and the original Run128 tagged workflow as a **recipe to audit**, not blindly copy.
+2. Source-apply/reconcile exact ReSukiSU, SUSFS commit, Baseband-guard and other agreed features while keeping true provenance and licenses. Different root hook revisions or patches can conflict.
+3. Set `CONFIG_LOCALVERSION="@jaf1887"` in the resolved config, build `Image` and all required *matching* modules/device trees with a controlled Clang version. The original `@MrPankaj24` modules cannot be merely renamed.
+4. Review resulting kernel configuration against the uploaded embedded original; verify modem, camera, WLAN and boot/recovery on SM-M146B. Build a model-checked flashable package only after that.
+
+[Our manual experimental workflow](../.github/workflows/build-kernel.yml) now defaults to the identified source repository, pinned **observed** snapshot and `m14x_defconfig`. **It is not a complete port of the original patch/integration workflow** and still fails intentionally if the resolved source lacks requested ReSukiSU/SUSFS/BBG config flags. No completed JAF kernel or tested ZIP exists.
