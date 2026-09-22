@@ -18,6 +18,12 @@ fi
 if ! grep -qx 'CONFIG_KSU=y' "$OUT_DIR/.config"; then
   echo 'CONFIG_KSU=y was not found in resolved .config; refusing to call this a ReSukiSU kernel.' >&2; exit 2
 fi
+if ! grep -qx 'CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"; then
+  echo 'CONFIG_KSU_SUSFS=y was not found in resolved .config; SUSFS must remain enabled.' >&2; exit 2
+fi
+if ! grep -qx 'CONFIG_LOCALVERSION="@jaf1887"' "$OUT_DIR/.config"; then
+  echo 'Custom build requires CONFIG_LOCALVERSION="@jaf1887"; run scripts/set-kernel-localversion.sh on the matching .config first.' >&2; exit 2
+fi
 if [[ ! -d "$KERNEL_DIR/KernelSU" && ! -d "$KERNEL_DIR/ksu" && ! -d "$KERNEL_DIR/drivers/kernelsu" ]]; then
   echo 'No expected integration directory found; verify the setup script result before building.' >&2
   exit 2
