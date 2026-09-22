@@ -59,3 +59,13 @@ No third-party kernel source or executable image has been published as a new bui
 ## Source discovery update (22 September 2026)
 
 The newly located [5.15.209 Samsung Exynos source](https://github.com/MrPankaj24/android_kernel_samsung_s5e8535) is closer to the running version than the [M14-specific 5.15.153 source](https://github.com/MrPankaj24/SM-M146B-Kernel-Source), but neither has been verified as the complete 5.15.211 Project-24 source. See the [source audit](docs/SOURCE_AUDIT.md) before attempting a build. Do not edit `SUBLEVEL` to mask a mismatch.
+
+
+## Cloud build workflows
+
+- [GitHub Actions instructions](docs/GITHUB_ACTIONS.md)
+- [Kernel CI validation](.github/workflows/kernel-ci.yml)
+- [Experimental source-gated Image/modules build](.github/workflows/build-kernel.yml)
+- [Add extracted configuration](configs/README.md)
+
+The source-gated build intentionally cannot produce a valid new 5.15.211 kernel with the currently identified 5.15.153 or 5.15.209 source trees. Do not treat an Actions artifact as flashable without matching source/modules and on-device testing.
