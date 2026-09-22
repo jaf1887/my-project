@@ -1,0 +1,134 @@
+name: JAF Kernel Experimental Image Build
+
+# Manually triggered only. It must NOT flash a device or produce a release.
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Verified full M14/Project-24 kernel source, OWNER/REPO'
+        required: true
+        type: string
+      source_commit:
+        description: 'Exact matching 5.15.211 source commit (40 hex characters)'
+        required: true
+        type: string
+      defconfig:
+        description: 'M14 defconfig target in the matching source, e.g. s5e8535-m14xnsxx_defconfig'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jaf-kernel-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source-gated-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      EXPECTED_KERNEL_VERSION: '5.15.211'
+      SOURCE_REPO: ${{ inputs.source_repo }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      DEFCONFIG: ${{ inputs.defconfig }}
+    steps:
+      - name: Check out JAF builder
+        uses: actions/checkout@v4
+
+      - name: Validate explicit build inputs and source availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo 'Expected source_repo in OWNER/REPO form' >&2
+            exit 2
+          fi
+          if [[ ! "$SOURCE_COMMIT" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo 'Must supply a reviewed exact source commit SHA' >&2
+            exit 2
+          fi
+          if [[ ! "$DEFCONFIG" =~ ^[A-Za-z0-9_.+-]+_defconfig$ ]]; then
+            echo 'Supply only a defconfig target, not a shell command or path' >&2
+            exit 2
+          fi
+          if [[ ! -f configs/Project24-m14x-jaf1887.config ]]; then
+            echo 'Missing reference config: configs/Project24-m14x-jaf1887.config' >&2
+            echo 'Upload the extracted jaf1887 .config to that path first.' >&2
+            exit 2
+          fi
+          bash scripts/kernel-preflight.sh configs/Project24-m14x-jaf1887.config
+
+      - name: Install kernel build prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            dwarves device-tree-compiler clang lld llvm rsync cpio kmod python3 git
+
+      - name: Check out and verify full kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout "https://github.com/${SOURCE_REPO}.git" kernel-src
+          git -C kernel-src checkout --detach "$SOURCE_COMMIT"
+          actual="$(git -C kernel-src rev-parse HEAD)"
+          [[ "${actual,,}" == "${SOURCE_COMMIT,,}" ]] || { echo "Source commit mismatch" >&2; exit 3; }
+          bash scripts/verify-source.sh kernel-src
+          [[ -f "kernel-src/arch/arm64/configs/$DEFCONFIG" ]] || {
+            echo "Source does not contain the selected M14 defconfig" >&2
+            exit 3
+          }
+          echo "source_repo=$SOURCE_REPO" > source-provenance.txt
+          echo "source_commit=$actual" >> source-provenance.txt
+          echo "defconfig=$DEFCONFIG" >> source-provenance.txt
+          echo "clang=$(clang --version | head -n 1)" >> source-provenance.txt
+          echo 'A matching VERSION is necessary but NOT proof of matching Project-24 vendor changes or ABI.'
+
+      - name: Configure from exact M14 source defconfig and review resulting options
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          make -C kernel-src O="$GITHUB_WORKSPACE/out" ARCH=arm64 LLVM=1 "$DEFCONFIG"
+          bash scripts/set-kernel-localversion.sh out/.config
+          make -C kernel-src O="$GITHUB_WORKSPACE/out" ARCH=arm64 LLVM=1 olddefconfig
+          bash scripts/kernel-preflight.sh out/.config
+          if ! cmp -s out/.config configs/Project24-m14x-jaf1887.config; then
+            echo 'NOTICE: resolved source configuration differs from uploaded original config.'
+            echo 'Review the diff and KMI/ABI impact; successful compilation alone is not release approval.'
+            diff -u configs/Project24-m14x-jaf1887.config out/.config > config-diff.txt || true
+          fi
+
+      - name: Compile unvalidated kernel Image, device trees and matching modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C kernel-src O="$GITHUB_WORKSPACE/out" ARCH=arm64 LLVM=1 \
+            -j"$(nproc)" Image modules dtbs
+          test -s out/arch/arm64/boot/Image
+          test "$(find out -type f -name '*.ko' | wc -l)" -gt 0
+          test "$(find out -type f \( -name '*.dtb' -o -name '*.dtbo' \) | wc -l)" -gt 0
+
+      - name: Stage raw build outputs, not a flashable package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staged
+          cp out/arch/arm64/boot/Image staged/Image
+          cp out/.config staged/kernel.config
+          cp source-provenance.txt staged/
+          if [[ -f config-diff.txt ]]; then cp config-diff.txt staged/; fi
+          sha256sum staged/Image staged/kernel.config > staged/SHA256SUMS
+          find out -type f -name '*.ko' -print0 | tar --null -czf staged/modules-not-flashable.tar.gz -T -
+          find out -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print0 | tar --null -czf staged/device-trees-not-flashable.tar.gz -T -
+
+      - name: Upload experimental build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jaf-kernel-unvalidated-${{ github.run_number }}
+          path: staged/
+          if-no-files-found: error
+          retention-days: 7
