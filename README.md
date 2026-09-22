@@ -1,44 +1,51 @@
-# Samsung Galaxy M14 5G (SM-M146B/DS) — ReSukiSU kernel project
+# Samsung Galaxy M14 5G — Project-24 ReSukiSU update
 
-A source-gated development workspace for creating an ARM64 ReSukiSU-enabled kernel for the **Samsung Galaxy M14 5G**. **No completed or flashable kernel is available yet.** The scripts operate on a PC/Linux build environment and do not modify the phone.
+**Target device:** `SM-M146B`, ReCoreUI 8.1 Ultra. **Existing kernel:** `5.15.211-android13-8@MrPankaj24`.
 
-## What is implemented
+**Goal:** upgrade the kernel's *built-in ReSukiSU* while preserving the Project-24 device/vendor kernel changes and existing supported root/SUSFS features. This is **NOT a completed build or flashable ZIP**.
 
-- [`scripts/device-info.sh`](scripts/device-info.sh): read-only firmware/kernel report to run in Termux or `adb shell`.
-- [`scripts/verify-source.sh`](scripts/verify-source.sh): rejects a mismatched kernel base version before integration/build.
-- [`scripts/prepare-kernel.sh`](scripts/prepare-kernel.sh): checks out explicitly selected upstream kernel source and a pinned ReSukiSU commit, records provenance, and invokes ReSukiSU's integration script **only after** the source version matches.
-- [`scripts/build-image.sh`](scripts/build-image.sh): guarded ARM64 `Image` compilation after a device-specific `.config` and proper Clang toolchain are supplied. It does **not** package a Samsung boot image or claim that the result boots.
+## Pinned upgrade target (checked 22 September 2026)
 
-## Important current source mismatch
+- Existing uploaded AnyKernel3 ZIP reports built-in `v4.2.0-rc2-6d18926a@ReSukiSU`.
+- New integration source: [`ReSukiSU/ReSukiSU@9be0f347f38e790c846915bd5f9c24b337f85c4e`](https://github.com/ReSukiSU/ReSukiSU/commit/9be0f347f38e790c846915bd5f9c24b337f85c4e).
+- GitHub compare shows this target **12 commits ahead** of `6d18926a`. This is a *development revision*, not a promise of a stable, tested release for SM-M146B. Examine [upstream changes](https://github.com/ReSukiSU/ReSukiSU/compare/6d18926a...9be0f347f38e790c846915bd5f9c24b337f85c4e) for compatibility.
 
-A previously reported working Project-24 kernel on this device has release **5.15.211-android13-8**. At inspection, the `Makefile` in [`MrPankaj24/SM-M146B-Kernel-Source`](https://github.com/MrPankaj24/SM-M146B-Kernel-Source) declares **5.15.153**, so it cannot be treated as an exact replacement for that installed kernel without locating the correct revision or reconciling the vendor and Project-24 patches. ReSukiSU upstream: <https://github.com/ReSukiSU/ReSukiSU>. The exact current phone firmware build and device-specific build configuration are still needed.
+**Do not confuse the Manager APK/ksud update with a kernel update.** A newly installed manager does not replace the ReSukiSU code compiled into the running kernel.
 
-## Obtain the read-only phone report
+## Existing device evidence
 
-Copy `scripts/device-info.sh` onto the phone and run `sh device-info.sh` in Termux, or run the equivalent `getprop` and `uname` commands via `adb shell`. Review output before sharing it publicly.
+- [`docs/DEVICE.md`](docs/DEVICE.md) — firmware and `uname -r` observed in Termux.
+- [`docs/PROJECT24_ZIP_INSPECTION.md`](docs/PROJECT24_ZIP_INSPECTION.md) — archive inspection, compiled kernel string and embedded `.config` characteristics.
+- User-uploaded ZIP is a prebuilt AnyKernel3 package with an `Image`, **not** the complete matching kernel source. Its installer disables device checking (`do.devicecheck=0`).
+- A separate public [`MrPankaj24/SM-M146B-Kernel-Source`](https://github.com/MrPankaj24/SM-M146B-Kernel-Source) revision declares **5.15.153**, unlike the uploaded ZIP's **5.15.211**. The base release string alone would not prove the correct Samsung/Project-24 patches even if the number matched.
 
-## Prepare an explicitly verified source checkout
+## Source-gated build workflow
 
-Run these commands **on a Linux build PC**, only after choosing the correct source and reviewing the integration script. The SHA must be the exact 40-character commit ID you intend to use:
+On a **Linux PC**, after obtaining an exact source commit that contains the matching SM-M146B/Project-24 vendor changes:
 
 ```bash
 export SOURCE_URL='https://github.com/REPLACE_WITH_VERIFIED_MATCHING_KERNEL.git'
 export SOURCE_REF='REPLACE_WITH_VERIFIED_KERNEL_COMMIT'
-export RESUKISU_SHA='REPLACE_WITH_REVIEWED_40_CHARACTER_RESUKISU_COMMIT'
 export EXPECTED_KERNEL_VERSION='5.15.211'
+export RESUKISU_SHA='9be0f347f38e790c846915bd5f9c24b337f85c4e'
 bash scripts/prepare-kernel.sh
 ```
 
-The preparation script deliberately refuses to build from a `5.15.153` tree when `5.15.211` is required. **Do not defeat this check simply to produce an image.**
+The script **stops on a mismatched base version** and checks that upstream ReSukiSU setup actually installed the pinned commit. It does not attempt to extract C source from a compiled `Image`.
 
-## Build after device configuration is verified
-
-A correct Samsung/Project-24 device defconfig must first be resolved into `work/out/.config`, containing `CONFIG_KSU=y`, and the compatible Android Clang toolchain must be on `PATH`. Only then:
+Then restore the *matched* original defconfig (the user-provided `Image` embeds IKCONFIG), determine the source's precise Samsung toolchain/firmware build requirements, resolve all ReSukiSU and SUSFS patch conflicts, and inspect the resulting `.config` including `CONFIG_KSU=y`. Only when these conditions are met run:
 
 ```bash
 bash scripts/build-image.sh
 ```
 
-This is a generic `Image` build stage, not a substitute for the upstream vendor build process. A successful `Image` alone is **not flashable**; the matching DTB/DTBO, modules, boot-image layout, firmware and rollback method must be verified separately. No GitHub Action is configured to flash or distribute untested output.
+That command produces only a raw ARM64 `Image`, **not** a flashable Samsung boot image. Matching DTB/DTBO, vendor modules, exact boot partition format, backup/rollback and real-device testing are separate requirements. **Do not flash any output until verified.**
 
-See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) for validation gates. Never publish IMEI, serial numbers, personal phone backups or private credentials. Preserve upstream copyright and licence notices when importing code.
+## Repository scripts
+
+- [`scripts/device-info.sh`](scripts/device-info.sh): read-only device information.
+- [`scripts/verify-source.sh`](scripts/verify-source.sh): rejects mismatched source versions.
+- [`scripts/prepare-kernel.sh`](scripts/prepare-kernel.sh): pinned upstream checkout and integration, guarded by source checks.
+- [`scripts/build-image.sh`](scripts/build-image.sh): guarded, un-packaged ARM64 kernel `Image` compilation.
+
+No third-party kernel source or executable image has been published as a new build here. Preserve upstream copyright and licence notices and never publish personal backups, serial numbers, IMEIs, or private credentials.
