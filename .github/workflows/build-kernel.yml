@@ -5,17 +5,20 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Verified full M14/Project-24 kernel source, OWNER/REPO'
+        description: 'M14 Linux source, OWNER/REPO (default from Run128 workflow)'
         required: true
         type: string
+        default: 'devhunter1/android_kernel_samsung_s5e8535'
       source_commit:
-        description: 'Exact matching 5.15.211 source commit (40 hex characters)'
+        description: 'Pinned 5.15.211 source snapshot; NOT verified as exact Run128 commit'
         required: true
         type: string
+        default: '906601a25962356b037817ed5deaa483b44b9233'
       defconfig:
-        description: 'M14 defconfig target in the matching source, e.g. s5e8535-m14xnsxx_defconfig'
+        description: 'Device defconfig identified from original Project-24 Run128 workflow'
         required: true
         type: string
+        default: 'm14x_defconfig'
 
 permissions:
   contents: read
