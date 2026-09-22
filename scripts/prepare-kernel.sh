@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prepare a LOCAL kernel checkout; never touches a phone or produces a flashable image.
-# Supply the exact matching source repository/ref and a reviewed ReSukiSU commit SHA.
-: "${SOURCE_URL:?Set SOURCE_URL to a verified matching SM-M146B kernel source Git URL}"
-: "${SOURCE_REF:?Set SOURCE_REF to an exact source commit SHA or immutable tag}"
-: "${RESUKISU_SHA:?Set RESUKISU_SHA to a reviewed 40-hex-character upstream ReSukiSU commit SHA}"
+# Prepares sources on a Linux build PC. DOES NOT build or flash a kernel.
+# ReSukiSU target verified 22 Sep 2026: 12 commits after ZIP's 6d18926a base.
+: "${SOURCE_URL:?Set SOURCE_URL to the matching SM-M146B Project-24 kernel source Git URL}"
+: "${SOURCE_REF:?Set SOURCE_REF to the verified kernel source commit SHA or immutable tag}"
+RESUKISU_SHA="${RESUKISU_SHA:-9be0f347f38e790c846915bd5f9c24b337f85c4e}"
 EXPECTED_KERNEL_VERSION="${EXPECTED_KERNEL_VERSION:-5.15.211}"
 WORKDIR="${WORKDIR:-$PWD/work}"
-case "$RESUKISU_SHA" in
-  *[!0-9a-fA-F]*|'') echo 'RESUKISU_SHA must be a full hexadecimal commit SHA' >&2; exit 2 ;;
-esac
-if [[ ${#RESUKISU_SHA} -ne 40 ]]; then echo 'RESUKISU_SHA must be 40 hex characters' >&2; exit 2; fi
+
+if [[ ! "$RESUKISU_SHA" =~ ^[[:xdigit:]]{40}$ ]]; then
+  echo 'RESUKISU_SHA must be an exact 40-digit commit ID.' >&2
+  exit 2
+fi
 mkdir -p "$WORKDIR"
-if [[ -e "$WORKDIR/kernel" ]]; then echo "STOP: $WORKDIR/kernel already exists; use a fresh WORKDIR" >&2; exit 2; fi
+if [[ -e "$WORKDIR/kernel" || -e "$WORKDIR/resukisu" ]]; then
+  echo "STOP: $WORKDIR/kernel or $WORKDIR/resukisu exists. Use a fresh WORKDIR." >&2
+  exit 2
+fi
 
 git clone --no-checkout "$SOURCE_URL" "$WORKDIR/kernel"
 git -C "$WORKDIR/kernel" checkout --detach "$SOURCE_REF"
@@ -29,7 +33,15 @@ mkdir -p "$WORKDIR/reports"
   printf 'expected_kernel_version=%s\n' "$EXPECTED_KERNEL_VERSION"
 } > "$WORKDIR/reports/provenance.txt"
 
-# Upstream's documented integration script is reviewed/pinned by RESUKISU_SHA.
-(cd "$WORKDIR/kernel" && bash "$WORKDIR/resukisu/kernel/setup.sh")
-printf '\nReSukiSU integration script finished. Review changes, choose the proper SM-M146B defconfig and hooks, then build.\n'
-printf 'NO kernel image has been built or validated for flashing.\n'
+# IMPORTANT: upstream setup.sh without an argument follows the MOVING main branch,
+# even if the copy of setup.sh was checked out at a particular SHA. Pass the SHA.
+(cd "$WORKDIR/kernel" && bash "$WORKDIR/resukisu/kernel/setup.sh" "$RESUKISU_SHA")
+
+actual="$(git -C "$WORKDIR/kernel/KernelSU" rev-parse HEAD)"
+if [[ "${actual,,}" != "${RESUKISU_SHA,,}" ]]; then
+  echo "STOP: setup selected $actual, expected $RESUKISU_SHA" >&2
+  exit 3
+fi
+printf 'Integrated ReSukiSU commit: %s\n' "$actual"
+printf 'Integration completed. This is NOT a built kernel or flashable ZIP.\n'
+printf 'Before compiling, resolve the EXACT device defconfig, Samsung vendor patches, toolchain and original boot image.\n'
