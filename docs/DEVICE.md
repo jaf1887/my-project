@@ -13,12 +13,18 @@ Source: device owner’s screenshots of read-only Termux commands. These record 
 | `getprop ro.boot.verifiedbootstate` | `green`; **not proof** of a locked bootloader, given the custom ROM and root environment. |
 | `su -c 'ls -l /dev/block/by-name/boot*'` | `/dev/block/by-name/boot -> /dev/block/sda15` |
 | `su -c 'ls -l /dev/block/by-name/*dtb*'` | `/dev/block/by-name/dtbo -> /dev/block/sda13` |
+| Full by-name listing: `init_boot` | `/dev/block/sda16` |
+| Full by-name listing: `vendor_boot` | `/dev/block/sda17` |
+| Full by-name listing: `recovery` | `/dev/block/sda18` |
+| Full by-name listing: `vbmeta` | `/dev/block/sda26` |
+| Full by-name listing: `vbmeta_system` | `/dev/block/sda27` |
+| Full by-name listing: `super` | `/dev/block/sda32` |
 
 **Bootloader evidence:** `M146BXXSCDZB5` is reported by the device; match the `M146B` model and bootloader/firmware family when selecting stock firmware or Samsung kernel source. The bootloader identifier alone does not specify the full source baseline.
 
 **Important:** The display ID identifies a custom ROM and includes an `S711B`-like string; it is **not** the original stock Samsung M146B firmware identifier. Custom ROM properties may be spoofed; validate boot partitions using a read-only device-specific partition listing and original firmware package before packaging.
 
-**Read-only partition listing:** This phone exposes `boot` and `dtbo` symlinks. The `boot*` and `*dtb*` globs do **not** rule out separately named `vendor_boot`, `init_boot`, recovery, vbmeta or other partitions. Do not infer image header format, image size, or flashing procedure from symlinks alone. Before packaging, inspect the full `/dev/block/by-name` map and obtain verified recovery backups, firmware and a matching kernel source/build.
+**Full read-only partition listing confirmed:** This phone has separate `boot`, `init_boot`, `vendor_boot`, `dtbo`, `recovery`, `vbmeta`, and `vbmeta_system` entries. These are links seen on **this** phone, not generic flash instructions. Never overwrite `init_boot`/`vendor_boot`/`dtbo` merely because they exist: the actual packaging requirements must come from the matching kernel source and the existing Project-24 installer. The uploaded original AnyKernel3 installer targets `boot`, but its compatibility checks are disabled; do not claim it is safe to reuse unchanged. Confirm image header format, backups, Samsung firmware, source revision and validated rollback before any write. Use partition names rather than fixed `/dev/block/sdaN` numbers in any future verified procedure.
 
 The browsed `MrPankaj24/SM-M146B-Kernel-Source` `Makefile` declares kernel `5.15.153`, not a demonstrated drop-in match for the running `5.15.211` Project-24 kernel. Need the matching 5.15.211 source, board defconfig, all modules, device trees and exact boot image layout.
 
