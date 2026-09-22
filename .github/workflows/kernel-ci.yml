@@ -1,0 +1,59 @@
+name: JAF Kernel CI
+
+on:
+  push:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - 'configs/**'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - 'configs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-builder:
+    name: Validate build scripts and safety gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Confirm mismatched kernel source is rejected
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/wrong-source"
+          cat > "$RUNNER_TEMP/wrong-source/Makefile" <<'EOF'
+          VERSION = 5
+          PATCHLEVEL = 15
+          SUBLEVEL = 153
+          EOF
+          if EXPECTED_KERNEL_VERSION=5.15.211 bash scripts/verify-source.sh "$RUNNER_TEMP/wrong-source"; then
+            echo 'FAIL: mismatched source was accepted' >&2
+            exit 1
+          fi
+          echo 'PASS: refuses the old 5.15.153 source'
+
+      - name: Check optional committed reference configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f configs/Project24-m14x-jaf1887.config ]]; then
+            bash scripts/kernel-preflight.sh configs/Project24-m14x-jaf1887.config
+          else
+            echo 'No full configuration committed yet; see configs/README.md.'
+          fi
