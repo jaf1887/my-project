@@ -49,3 +49,8 @@ That command produces only a raw ARM64 `Image`, **not** a flashable Samsung boot
 - [`scripts/build-image.sh`](scripts/build-image.sh): guarded, un-packaged ARM64 kernel `Image` compilation.
 
 No third-party kernel source or executable image has been published as a new build here. Preserve upstream copyright and licence notices and never publish personal backups, serial numbers, IMEIs, or private credentials.
+
+
+## Build it yourself: start here
+
+**[BUILD_FROM_SOURCE.md](docs/BUILD_FROM_SOURCE.md)** is the current source-first build plan. Run `bash scripts/kernel-preflight.sh /path/to/Project24-m14x-jaf1887.config` to audit the desired configuration. The candidate public M14 source is 5.15.153, not a proven match for the installed Project-24 5.15.211 kernel. We do not yet have matching source and rebuilt modules, so this repo has no independently built flashable release.
