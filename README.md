@@ -54,3 +54,8 @@ No third-party kernel source or executable image has been published as a new bui
 ## Build it yourself: start here
 
 **[BUILD_FROM_SOURCE.md](docs/BUILD_FROM_SOURCE.md)** is the current source-first build plan. Run `bash scripts/kernel-preflight.sh /path/to/Project24-m14x-jaf1887.config` to audit the desired configuration. The candidate public M14 source is 5.15.153, not a proven match for the installed Project-24 5.15.211 kernel. We do not yet have matching source and rebuilt modules, so this repo has no independently built flashable release.
+
+
+## Source discovery update (22 September 2026)
+
+The newly located [5.15.209 Samsung Exynos source](https://github.com/MrPankaj24/android_kernel_samsung_s5e8535) is closer to the running version than the [M14-specific 5.15.153 source](https://github.com/MrPankaj24/SM-M146B-Kernel-Source), but neither has been verified as the complete 5.15.211 Project-24 source. See the [source audit](docs/SOURCE_AUDIT.md) before attempting a build. Do not edit `SUBLEVEL` to mask a mismatch.
