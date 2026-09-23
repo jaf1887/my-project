@@ -2,6 +2,10 @@
 
 **Status:** the experimental Image compiled successfully, with matching-release modules and matching device-tree blobs; this is NOT an on-phone boot test. The [offline report](https://github.com/jaf1887/my-project/actions/runs/35910680064) cannot certify the existing ROM's boot image, module installation paths, or recovery.
 
+## Additional completed offline check
+
+The extracted rebuilt module archive has exactly **300 module files** and **300 `modules.dep` entries**, referencing 135 distinct dependency targets; all referenced `.ko` paths exist within the same rebuilt archive (0 missing). This verifies the archive's *internal dependency paths*, **not** CRC/KMI compatibility with the ROM's vendor modules or successful runtime loading.
+
 ## 1. Read-only boot-partition backup on the owner's phone
 
 The owner has previously shown this exact by-name partition map (recheck on-device first):
@@ -26,7 +30,7 @@ In Termux (inspect the downloaded script before running):
 pkg install curl -y
 curl -fsSLo "$HOME/jaf-backup.sh" \
   https://raw.githubusercontent.com/jaf1887/my-project/main/scripts/backup-boot-partitions-termux.sh
-less "$HOME/jaf-backup.sh"
+cat "$HOME/jaf-backup.sh"
 bash "$HOME/jaf-backup.sh"
 ```
 
