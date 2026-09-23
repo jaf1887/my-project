@@ -1,0 +1,23 @@
+name: Lint JAF workflow
+
+on:
+  push:
+    paths:
+      - '.github/workflows/jaf-run128-build.yml'
+      - '.github/workflows/lint-jaf.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and run actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest -color -oneline .github/workflows/jaf-run128-build.yml
