@@ -179,7 +179,7 @@ jobs:
           echo "AOSP_TOOLS_PATH=${GITHUB_WORKSPACE}/toolchains/build-tools/linux-x86/bin" >> $GITHUB_ENV
 
       - name: 📝 Generate Clean su.config
-        true
+        if: true
         run: |
           cd ${KERNEL_ROOT}
           echo ">>> Generating su.config with SUSFS and Anti-Root bypasses forced to 'y'..."
@@ -243,7 +243,7 @@ jobs:
           echo "✅ Generated arch/arm64/configs/su.config successfully!"
 
       - name: 📝 Generate SELinux Permissive Config
-        false
+        if: false
         run: |
           cd ${KERNEL_ROOT}
           echo ">>> Generating permissive.config..."
@@ -283,7 +283,7 @@ jobs:
           fi
 
       - name: 📥 Fetch & Apply DroidSpaces Patch
-        true
+        if: true
         run: |
           cd ${KERNEL_ROOT}
           echo ">>> Downloading and applying DroidSpaces patch..."
@@ -541,14 +541,14 @@ jobs:
           echo "✅ Re:Kernel integrated successfully!"
 
       - name: 🛠️ Fix Clang-20+ sizeof-pointer-memaccess Error
-        false
+        if: false
         run: |
           cd ${KERNEL_ROOT}
           echo ">>> Patching OVT touchscreen driver for newer Clang compatibility..."
           find drivers/input/touchscreen/ovt/ -type f -name "*.c" -exec sed -i 's/sizeof(tcm_hcd->print_buf)/SEC_CMD_STR_LEN/g' {} +
 
       - name: 🛑 Apply CRCs Disable Patch
-        true
+        if: true
         shell: bash
         run: |
           set -euo pipefail
@@ -622,7 +622,7 @@ jobs:
           find . -name "*.orig" -delete -o -name "*.rej" -delete
 
       - name: ⚡ Apply Exynos 5.15 Optimization Suite
-        true
+        if: true
         shell: bash
         run: |
           set -euo pipefail
