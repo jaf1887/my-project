@@ -741,9 +741,19 @@ jobs:
           grep -qx 'CONFIG_LOCALVERSION="@jaf1887"' "${OUTDIR}/.config"
           make O="${OUTDIR}" CC="${CC}" olddefconfig
           grep -qx 'CONFIG_LOCALVERSION="@jaf1887"' "${OUTDIR}/.config"
+          # Regenerate auto.conf/kernel.release after changing the saved .config.
+          # A stale auto.conf from the initial defconfig omitted @jaf1887.
+          make O="${OUTDIR}" CC="${CC}" prepare
+          echo "Saved config localversion:"
+          grep '^CONFIG_LOCALVERSION=' "${OUTDIR}/.config"
+          echo "Generated Kbuild localversion:"
+          grep '^CONFIG_LOCALVERSION=' "${OUTDIR}/include/config/auto.conf"
           make -s O="${OUTDIR}" CC="${CC}" kernelrelease | tee "${GITHUB_WORKSPACE}/kernel-release.txt"
+          if ! grep -q '@jaf1887' "${GITHUB_WORKSPACE}/kernel-release.txt"; then
+            echo "STOP: the compiled kernel release would not identify as @jaf1887" >&2
+            exit 3
+          fi
           ! grep -q 'MrPankaj24' "${GITHUB_WORKSPACE}/kernel-release.txt"
-          grep -q '@jaf1887' "${GITHUB_WORKSPACE}/kernel-release.txt"
           grep -qx 'CONFIG_KSU=y' "${OUTDIR}/.config"
           grep -qx 'CONFIG_KSU_SUSFS=y' "${OUTDIR}/.config"
           grep -qx 'CONFIG_BBG=y' "${OUTDIR}/.config"
