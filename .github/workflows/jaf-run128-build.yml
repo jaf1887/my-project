@@ -1,0 +1,1424 @@
+name: JAF Run128 Experimental Compile
+
+permissions:
+  contents: read
+
+on:
+  push:
+    paths:
+      - '.github/workflows/jaf-run128-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build-kernel:
+    name: 🏗️ Build (m14x_defconfig | ${{ 'llvm22-ccache' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      KERNEL_ROOT: ${{ github.workspace }}/kernel_workspace
+      OUTDIR: ${{ github.workspace }}/kernel_workspace/out
+      MODULES_OUTDIR: ${{ github.workspace }}/kernel_workspace/modules_out
+      TARGET_SOC: s5e8535
+      SOC_NAME: s5e8535
+      PLATFORM_VERSION: 15
+      ANDROID_MAJOR_VERSION: t
+      ARCH: arm64
+      SUBARCH: arm64
+      # --- STATIC CONFIG URLS ---
+      PERF_CONFIG_URL: 'https://github.com/MrPankaj24/kernel_patch/blob/main/for_devhunter1/perf.config'
+      NETHUNTER_CONFIG_URL: 'https://github.com/MrPankaj24/kernel_common_modifications/blob/basic/arch/arm64/configs/nethunter.config'
+
+    steps:
+      - name: 🧹 Free Disk Space
+        uses: endersonmenezes/free-disk-space@main
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+          testing: false
+
+      - name: 📥 Checkout Action Repository
+        uses: actions/checkout@v4
+
+      - name: 📦 Install Tools & Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex git lld llvm python3 \
+          curl wget libssl-dev libelf-dev python3-setuptools python-is-python3 \
+          make gcc gcc-aarch64-linux-gnu binutils binutils-aarch64-linux-gnu g++ \
+          cpio zip unzip lz4 zstd xz-utils libncurses-dev libncurses5-dev \
+          kmod rsync clang dwarves pahole ccache device-tree-compiler zlib1g-dev \
+          libc6-dev-i386 cmake ninja-build file patch sudo
+
+      - name: ⚙️ Export ccache + determinism
+        if: contains('llvm22-ccache', 'ccache')
+        run: |
+          CACHE_DIR="${{ github.workspace }}/.ccache"
+          mkdir -p "$CACHE_DIR"
+          
+          SETTINGS=(
+            "CCACHE_DIR=$CACHE_DIR"
+            "CCACHE_MAXSIZE=12G"
+            "CCACHE_COMPILERCHECK=content"
+            "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            "CCACHE_NOHASHDIR=true"
+            "CCACHE_IGNOREOPTIONS=-sysroot* -fdebug-prefix-map=* -fmacro-prefix-map=*"
+            "CCACHE_COMPRESS=true"
+            "CCACHE_COMPRESSLEVEL=8"
+            "CCACHE_DIRECT=true"
+            "CCACHE_FILE_CLONE=true"
+            "CCACHE_INODE_CACHE=true"
+            "CCACHE_IS_KERNEL_COMPILING=true"
+            "CCACHE_UMASK=002"
+            "KBUILD_BUILD_TIMESTAMP=2026-01-01"
+            "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale,file_stat_matches"
+          )
+
+          for setting in "${SETTINGS[@]}"; do
+            export "$setting"
+            echo "$setting" >> $GITHUB_ENV
+          done
+
+          if ccache --help 2>&1 | grep -q 'depend_mode'; then
+              export CCACHE_DEPEND=true
+              echo "CCACHE_DEPEND=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: ♻️ Restore ccache
+        if: contains('llvm22-ccache', 'ccache')
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ runner.os }}-make-${{ 'llvm22-ccache' }}-lineage-23.2-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-make-${{ 'llvm22-ccache' }}-lineage-23.2
+            ccache-${{ runner.os }}-make-${{ 'llvm22-ccache' }}-
+
+      - name: 🔗 Ensure ccache is masked into PATH
+        if: contains('llvm22-ccache', 'ccache')
+        run: |
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+          echo "CC=ccache clang" >> $GITHUB_ENV
+          echo "CXX=ccache clang++" >> $GITHUB_ENV
+
+      - name: ⚡ Setup 25GB Swap (For FullLTO)
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 25
+
+      - name: 📥 Clone Kernel Source
+        run: |
+          mkdir -p ${KERNEL_ROOT}
+          echo ">>> Cloning Kernel Source: lineage-23.2"
+          git clone --depth=1 -b lineage-23.2 https://github.com/devhunter1/android_kernel_samsung_s5e8535.git ${KERNEL_ROOT}
+          git -C "${KERNEL_ROOT}" fetch --depth=1 origin 906601a25962356b037817ed5deaa483b44b9233
+          git -C "${KERNEL_ROOT}" checkout --detach 906601a25962356b037817ed5deaa483b44b9233
+          grep -q '^SUBLEVEL = 211
+
+      - name: 🔧 Setup Toolchain (${{ 'llvm22-ccache' }})
+        run: |
+          set -euo pipefail
+          mkdir -p ${GITHUB_WORKSPACE}/toolchains
+          cd ${GITHUB_WORKSPACE}/toolchains
+          
+          if [[ "${{ 'llvm22-ccache' }}" == *"llvm22"* ]]; then
+            echo ">>> Installing LLVM 22 from official APT repository..."
+            wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 22
+            sudo apt-get install -y clang-22 lld-22 llvm-22
+            sudo ln -sf /usr/bin/clang-22 /usr/bin/clang || true
+            sudo ln -sf /usr/bin/ld.lld-22 /usr/bin/ld.lld || true
+            echo "COMPILER_PATH=/usr/lib/llvm-22/bin:/usr/bin" >> $GITHUB_ENV
+            if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+              echo "COMPILER_CC=ccache clang-22" >> $GITHUB_ENV
+            else
+              echo "COMPILER_CC=clang-22" >> $GITHUB_ENV
+            fi
+
+          elif [[ "${{ 'llvm22-ccache' }}" == *"google-clang-17"* ]]; then
+            echo ">>> Fetching Google Clang (r596125 - Android 17 Release)..."
+            CLANG_VER="clang-r596125"
+            DL_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android17-release/${CLANG_VER}.tar.gz"
+            mkdir -p ${CLANG_VER}
+            curl -L "$DL_URL" -o clang.tar.gz
+            tar -xzf clang.tar.gz -C ${CLANG_VER}
+            echo "COMPILER_PATH=${GITHUB_WORKSPACE}/toolchains/${CLANG_VER}/bin" >> $GITHUB_ENV
+            if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+              echo "COMPILER_CC=ccache clang" >> $GITHUB_ENV
+            else
+              echo "COMPILER_CC=clang" >> $GITHUB_ENV
+            fi
+            
+          else
+            echo ">>> Fetching Google Clang (r487747c - Android 14 Stable)..."
+            CLANG_VER="clang-r487747c"
+            DL_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/${CLANG_VER}.tar.gz"
+            mkdir -p ${CLANG_VER}
+            curl -L "$DL_URL" -o clang.tar.gz
+            tar -xzf clang.tar.gz -C ${CLANG_VER}
+            echo "COMPILER_PATH=${GITHUB_WORKSPACE}/toolchains/${CLANG_VER}/bin" >> $GITHUB_ENV
+            if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+              echo "COMPILER_CC=ccache clang" >> $GITHUB_ENV
+            else
+              echo "COMPILER_CC=clang" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: ⬇️ Download AOSP Kernel Build Tools
+        run: |
+          git clone --depth=1 -b main https://android.googlesource.com/kernel/prebuilts/build-tools ${GITHUB_WORKSPACE}/toolchains/build-tools
+          echo "AOSP_TOOLS_PATH=${GITHUB_WORKSPACE}/toolchains/build-tools/linux-x86/bin" >> $GITHUB_ENV
+
+      - name: 📝 Generate Clean su.config
+        true
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Generating su.config with SUSFS and Anti-Root bypasses forced to 'y'..."
+          cat > arch/arm64/configs/su.config << 'EOF'
+          # KernelSU
+          CONFIG_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KSU_TRACEPOINT_HOOK=n
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU=y
+          CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+
+          # SuSFS Configuration
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+
+          # Disable Samsung Anti-Root Protection
+          CONFIG_UH=n
+          CONFIG_RKP=n
+          CONFIG_KDP=n
+          CONFIG_SECURITY_DEFEX=n
+          CONFIG_PROCA=n
+          CONFIG_FIVE=n
+
+          # Force Load Kernel Modules
+          CONFIG_MODULES=y
+          CONFIG_MODULE_FORCE_LOAD=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_MODULE_FORCE_UNLOAD=y
+          CONFIG_MODVERSIONS=y
+          CONFIG_MODULE_SRCVERSION_ALL=n
+          CONFIG_MODULE_SIG=n
+          CONFIG_MODULE_COMPRESS=n
+          CONFIG_TRIM_UNUSED_KSYMS=n
+
+          # Kallsyms & NTSync Built-in
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          CONFIG_NTSYNC=y
+          CONFIG_LOCALVERSION_AUTO=n
+          CONFIG_LOCALVERSION="@MrPankaj24"
+
+          CONFIG_LTO_CLANG_FULL=y
+          CONFIG_ARCH_SUPPORTS_LTO_CLANG_FULL=y
+          # CONFIG_LTO_CLANG_THIN is not set
+          EOF
+          echo "✅ Generated arch/arm64/configs/su.config successfully!"
+
+      - name: 📝 Generate SELinux Permissive Config
+        false
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Generating permissive.config..."
+          cat > arch/arm64/configs/permissive.config << 'EOF'
+          CONFIG_SECURITY_SELINUX_DEVELOP=y
+          CONFIG_SECURITY_SELINUX_BOOTPARAM=y
+          CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0
+          # CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE is not set
+          # CONFIG_ALWAYS_ENFORCING is not set
+          CONFIG_CMDLINE_BOOL=y
+          CONFIG_CMDLINE="enforcing=0 androidboot.selinux=permissive"
+          CONFIG_CMDLINE_EXTEND=y
+          # CONFIG_CMDLINE_OVERRIDE is not set
+          EOF
+          echo "✅ Generated arch/arm64/configs/permissive.config successfully!"
+
+      - name: 📥 Fetch Individual Extra Configs
+        run: |
+          cd ${KERNEL_ROOT}/arch/arm64/configs/
+          download_config() {
+            local url="$1"
+            local filename="$2"
+            if [ -n "$url" ]; then
+              local raw_url=$(echo "$url" | sed 's/github.com/raw.githubusercontent.com/' | sed 's/\/blob\//\//')
+              echo ">>> Downloading $filename from $raw_url..."
+              curl -LSs "$raw_url" -o "$filename"
+            fi
+          }
+          if [ "true" == "true" ]; then
+            download_config "${{ env.PERF_CONFIG_URL }}" "perf.config"
+          fi
+          if [ "false" == "true" ]; then
+            download_config "${{ env.NETHUNTER_CONFIG_URL }}" "nethunter.config"
+          fi
+          if [ "true" == "true" ]; then
+            download_config "https://github.com/MrPankaj24/kernel_patch/blob/main/for_devhunter1/custom.config" "custom.config"
+          fi
+
+      - name: 📥 Fetch & Apply DroidSpaces Patch
+        true
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Downloading and applying DroidSpaces patch..."
+          curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/main/Droidspace/droidspace_for_1330.patch" -o droidspace_1330.patch
+          patch -p1 --forward < droidspace_1330.patch || true
+          rm droidspace_1330.patch
+
+      - name: 🛡️ Inject KernelSU Variant & Apply Locked SUSFS Patches
+        if: true
+        run: |
+          cd ${KERNEL_ROOT}
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu
+          
+          CHOICE="ReSukiSU"
+          BRANCH="main"
+          
+          if [[ "$CHOICE" == "ReSukiSU" ]]; then
+            echo ">>> Injecting ReSukiSU (Branch: $BRANCH)..."
+            
+            # 1. Clone the repo explicitly to the KernelSU folder
+            git clone -b $BRANCH https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+            git -C KernelSU checkout --detach 9be0f347f38e790c846915bd5f9c24b337f85c4e
+            
+            # 2. Check the commit log safely 
+            (cd KernelSU && git log -1) || true
+            
+            # 3. Apply your patches safely (if you decide to uncomment this later)
+            # echo ">>> Applying 70_ksu_safety patch for ReSukiSU..."
+            # curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/main/70_ksu_safety-resukisu-5.15.patch" -o ksu_safety.patch
+            # (cd KernelSU && patch -p1 --forward < ../ksu_safety.patch) || true
+            # rm ksu_safety.patch
+            
+            # 4. Run the setup script locally
+            bash KernelSU/kernel/setup.sh
+            
+          elif [[ "$CHOICE" == *"Official"* ]]; then
+            echo ">>> Injecting Official KernelSU (Branch/Commit: $BRANCH)..."
+            git clone -b $BRANCH https://github.com/tiann/KernelSU.git KernelSU || git clone https://github.com/tiann/KernelSU.git KernelSU
+            cd KernelSU && git checkout $BRANCH || true && cd ..
+            git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+            cd susfs4ksu && git checkout 7af04b08f86a5f811cbea28805f96d52368e005f && cd ..
+            cd KernelSU && patch -p1 --forward < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true && cd ..
+            bash KernelSU/kernel/setup.sh
+            rm -rf susfs4ksu
+            
+          elif [[ "$CHOICE" == *"Next"* ]]; then
+            echo ">>> Injecting KernelSU-Next (Branch: $BRANCH)..."
+            git clone -b $BRANCH https://github.com/rifsxd/KernelSU-Next.git KernelSU
+            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/$BRANCH/kernel/setup.sh" | bash
+            
+          elif [[ "$CHOICE" == "wksu" ]]; then
+            echo ">>> Injecting wksu (Branch: $BRANCH)..."
+            git clone -b $BRANCH https://github.com/WildKernels/Wild_KSU.git KernelSU
+            curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/$BRANCH/kernel/setup.sh" | bash -s $BRANCH
+
+          elif [[ "$CHOICE" == "KSUN_OP" ]]; then
+            echo ">>> Injecting KSUN_OP (pershoot KernelSU-Next)..."
+            if [ "true" == "true" ]; then
+              echo ">>> Setup pershoot KSUN with susfs..."
+              curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+            else
+              echo ">>> Setup KSUN with no susfs..."
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
+            fi
+            
+            echo ">>> Extracting KSU Version Info from stable branch..."
+            cd KernelSU-Next
+            
+            # Fetch the stable branch and all tags directly from the official repository
+            git fetch https://github.com/KernelSU-Next/KernelSU-Next.git stable --tags 2>/dev/null || true
+            
+            # Extract tags and commit count from FETCH_HEAD (the stable branch we just fetched)
+            KSU_GIT_VERSION=$(git rev-list --count FETCH_HEAD 2>/dev/null || echo 0)
+            KSU_GIT_TAG=$(git describe --tags --abbrev=0 FETCH_HEAD 2>/dev/null || echo "v0.0.1")
+            KSU_VERSION=$((30000 + KSU_GIT_VERSION))
+            
+            echo ">>> Injecting Version (Tag: $KSU_GIT_TAG | Version: $KSU_VERSION) into Kbuild..."
+            cd kernel
+            # Using .* ensures replacement works even if the default fallback values change in upstream updates
+            sed -i "s/^KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := ${KSU_VERSION}/" Kbuild || true
+            sed -i "s/^KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := ${KSU_GIT_TAG}/" Kbuild || true
+            cd ..
+
+            echo ">>> NUKING .git DIRECTORY TO FORCE FALLBACK VERSION..."
+            rm -rf .git
+            
+            if [ "true" == "true" ]; then
+              echo ">>> Applying static.patch for KSUN_OP..."
+              curl -LSs "https://raw.githubusercontent.com/WildKernels/Samsung_KernelSU_SUSFS/refs/heads/main/.github/actions/ksun/patches/static.patch" -o static.patch
+              patch -p1 < static.patch
+            fi
+            
+            cd ..
+            # Rename to match standard KernelSU path for the workflow
+            mv KernelSU-Next KernelSU
+          fi
+          
+          echo ">>> Rebuilding drivers/kernelsu symlink..."
+          rm -f drivers/kernelsu
+          
+          # Dynamically check where the Kconfig source actually lives
+          if [ -d "KernelSU/kernel" ]; then
+            ln -sf ../KernelSU/kernel drivers/kernelsu
+          else
+            ln -sf ../KernelSU drivers/kernelsu
+          fi
+          
+          # --- APPLY LOCKED SUSFS TO KERNEL TREE ---
+          if [ "true" == "true" ]; then
+            echo ">>> Cloning Official SUSFS repository..."
+            git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs_repo
+            if [ -n "7af04b08f86a5f811cbea28805f96d52368e005f" ]; then
+              echo ">>> Locking SUSFS commit to SHA: 7af04b08f86a5f811cbea28805f96d52368e005f..."
+              cd susfs_repo && git checkout 7af04b08f86a5f811cbea28805f96d52368e005f && cd ..
+            fi
+            echo ">>> Copying SUSFS core fs and headers into kernel tree..."
+            # cp -rf susfs_repo/kernel_patches/fs/* fs/
+            # cp -rf susfs_repo/kernel_patches/include/linux/* include/linux/
+            cp susfs_repo/kernel_patches/fs/susfs.c fs/
+            cp susfs_repo/kernel_patches/include/linux/susfs_def.h include/linux/
+            cp susfs_repo/kernel_patches/include/linux/susfs.h include/linux/
+            echo ">>> Applying base patch 50_add_susfs_in_gki-android13-5.15.patch..."
+            patch -p1 --forward < susfs_repo/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch || true
+            echo ">>> Applying custom reject resolution patch 51_fix_susfs_rejects.patch..."
+            curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/refs/heads/main/for_devhunter1/51_susfs_fix.patch" -o 51_fix.patch
+            patch -p1 --forward < 51_fix.patch || true
+            rm -rf susfs_repo 51_fix.patch
+            find . -name "*.orig" -delete -o -name "*.rej" -delete
+          fi
+
+
+      # NEW MOUNT TOGGLE CONDITIONAL
+      - name: 🛡️ Apply Mount Hiding, Unicode Fix & Full LTO Patches
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Applying Unicode Bypass Fix (Linux 5.15)..."
+          curl -LSs "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common/unicode_bypass_fix_6.1-.patch" -o unicode.patch
+          patch -p1 --forward < unicode.patch || true
+          rm unicode.patch
+
+          HIDE_MODE="NoMount"
+          
+          if [[ "$HIDE_MODE" == "Zeromount" ]]; then
+            echo ">>> Applying ZeroMount Path Redirection (Linux 5.15)..."
+            curl -LSs "https://raw.githubusercontent.com/jimsterino98/Super-Builders/main/android13-5.15/WildKSU/patches/60_zeromount-android13-5.15.patch" -o zeromount.patch
+            patch -p1 --forward < zeromount.patch || true
+            rm zeromount.patch
+
+            echo ">>> Injecting ZeroMount task_mmu.c and stat.c hooks via custom fix patch..."
+            curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/refs/heads/main/for_devhunter1/zeromount_fix_60.patch" -o zeromount_fix.patch
+            patch -p1 --forward < zeromount_fix.patch || true
+            rm zeromount_fix.patch
+
+            echo ">>> Applying ZeroMount 65 (Linux 5.15)..."
+            curl -LSs "https://raw.githubusercontent.com/Enginex0/Super-Builders/refs/heads/main/android13-5.15/ReSukiSU/patches/_archive/65_zeromount-adb-filter-android13-5.15.patch" -o zeromount65.patch
+            patch -p1 --forward < zeromount65.patch || true
+            rm zeromount65.patch
+
+            echo ">>> Enabling CONFIG_ZEROMOUNT=y in su.config..."
+            if [ -f "arch/arm64/configs/su.config" ]; then
+             echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/su.config
+            else
+             echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/m14x_defconfig
+            fi
+            echo "✅ ZeroMount applied successfully!"
+            
+          elif [[ "$HIDE_MODE" == "NoMount" ]]; then
+            echo ">>> Injecting NoMount (maxsteeel)..."
+            curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -
+            
+            echo ">>> Enabling CONFIG_NOMOUNT=y in su.config..."
+            if [ -f "arch/arm64/configs/su.config" ]; then
+             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/su.config
+            else
+             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/m14x_defconfig
+            fi
+            echo "✅ NoMount applied successfully!"
+            
+          else
+            echo ">>> No Mount Hiding option selected. Skipping..."
+          fi
+
+          echo ">>> Enabling Full Clang LTO in arch/Kconfig..."
+          if [ -f "arch/Kconfig" ]; then
+            sed -i '/^default LTO_NONE$/s/default LTO_NONE/default LTO_CLANG_FULL/' arch/Kconfig || true
+            sed -i '$ a config ARCH_SUPPORTS_LTO_CLANG_FULL\n\tdef_bool y\n\tdepends on ARCH_SUPPORTS_LTO_CLANG' arch/Kconfig || true
+          fi
+
+          echo "✅ Unicode Fix & Full LTO applied successfully!"
+
+      # --- HARDCODED ALWAYS-ON: NTSYNC ---
+      - name: 📥 Fetch & Apply NTSYNC Patches (Always Enabled)
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Downloading and applying NTSYNC patches..."
+          git clone https://github.com/MrPankaj24/kernel_patch.git temp_patch_repo
+          patch -p1 --forward < temp_patch_repo/ntsync_base.patch || true
+          patch -p1 --forward < temp_patch_repo/ntsync_compat_android13-5.15.patch || true
+          rm -rf temp_patch_repo
+
+      # --- HARDCODED ALWAYS-ON: BASEBAND GUARD (BBG) ---
+      - name: 🔒 Inject Baseband Guard (BBG - Always Enabled)
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Setting up Baseband Guard..."
+          curl -LSs https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          DEFCONFIG_FILE="arch/arm64/configs/m14x_defconfig"
+          if [ -f "$DEFCONFIG_FILE" ]; then
+            echo "CONFIG_BBG=y" >> "$DEFCONFIG_FILE"
+            echo "CONFIG_LOG_BUF_SHIFT=20" >> "$DEFCONFIG_FILE"
+            echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> "$DEFCONFIG_FILE"
+          fi
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig || true
+          
+          BBG_C_FILE=$(find . -name "baseband_guard.c" | head -n 1)
+          if [ -n "$BBG_C_FILE" ] && grep -q "get_link(dentry, inode, NULL)" "$BBG_C_FILE"; then
+            curl -LSs "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/experimental/bbg/bbg_fix_get_link.patch" -o bbg_fix.patch
+            patch -p1 --forward < bbg_fix.patch || true
+          fi
+            
+      # --- HARDCODED ALWAYS-ON: RE:KERNEL ---
+      - name: ⚡ Inject Re:Kernel Optimization (Always Enabled)
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Injecting Re:Kernel background app freezing optimization..."
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git temp_rekernel_repo
+          
+          echo ">>> Preparing ./rekernel directory for patches.sh..."
+          cp -rp temp_rekernel_repo/Integrate/rekernel ./rekernel
+          cp temp_rekernel_repo/Integrate/patches.sh ./
+          chmod +x patches.sh
+          
+          echo ">>> Running patches.sh to integrate driver..."
+          ./patches.sh || echo "⚠️ Note: patches.sh reported minor warnings or was already applied."
+          
+          echo ">>> Injecting jobctl.h header fix..."
+          if [ -f "drivers/rekernel/rekernel.h" ]; then
+            sed -i '1i #include <linux/sched/jobctl.h>' drivers/rekernel/rekernel.h
+            echo "✅ Added jobctl.h to drivers/rekernel/rekernel.h"
+          else
+            echo "❌ CRITICAL: drivers/rekernel/rekernel.h not found after running patches.sh!"
+            exit 1
+          fi
+
+          echo ">>> Adding Re:Kernel configs to defconfig..."
+          DEFCONFIG_FILE="arch/arm64/configs/m14x_defconfig"
+          if [ -f "$DEFCONFIG_FILE" ]; then
+            echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG_FILE"
+            echo "CONFIG_REKERNEL_NETWORK=n" >> "$DEFCONFIG_FILE"
+            echo "✅ Enabled CONFIG_REKERNEL=y in ${DEFCONFIG_FILE}"
+          fi
+          
+          echo ">>> Cleaning up temporary Re:Kernel files..."
+          rm -rf ./rekernel temp_rekernel_repo patches.sh
+          echo "✅ Re:Kernel integrated successfully!"
+
+      - name: 🛠️ Fix Clang-20+ sizeof-pointer-memaccess Error
+        false
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Patching OVT touchscreen driver for newer Clang compatibility..."
+          find drivers/input/touchscreen/ovt/ -type f -name "*.c" -exec sed -i 's/sizeof(tcm_hcd->print_buf)/SEC_CMD_STR_LEN/g' {} +
+
+      - name: 🛑 Apply CRCs Disable Patch
+        true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_ROOT}"
+
+          PATCH_URL="https://raw.githubusercontent.com/MrPankaj24/kernel_patch/refs/heads/main/for_devhunter1/CRCs_disable.patch"
+          PATCH_FILE="CRCs_disable.patch"
+
+          echo ">>> Downloading CRCs_disable patch..."
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 "${PATCH_URL}" -o "${PATCH_FILE}"
+
+          echo ">>> Validating patch..."
+          test -s "${PATCH_FILE}" || { echo "❌ Patch file is empty"; exit 1; }
+          head -n 1 "${PATCH_FILE}" | grep -qE '^(diff --git|From )' || {
+            echo "❌ Not a valid patch file. First lines:"
+            head -n 20 "${PATCH_FILE}"
+            exit 1
+          }
+
+          echo ">>> Checking applicability..."
+          if git apply --check "${PATCH_FILE}"; then
+            git apply "${PATCH_FILE}"
+            echo "✅ CRCs_disable patch applied successfully."
+          else
+            echo "❌ Patch failed to apply cleanly."
+            git apply --check --verbose "${PATCH_FILE}" || true
+            exit 1
+          fi
+
+          rm -f "${PATCH_FILE}"
+
+      # --- HARDCODED ALWAYS-ON: BBRV3 ---
+      - name: 🌐 Apply BBRv3 TCP Congestion Control Patch (Always Enabled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_ROOT}"
+
+          PATCH_URL="https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"
+          PATCH_FILE="bbrv3.patch"
+
+          echo ">>> Downloading BBRv3 patch..."
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 "${PATCH_URL}" -o "${PATCH_FILE}"
+
+          echo ">>> Validating patch..."
+          test -s "${PATCH_FILE}" || { echo "❌ Patch file is empty"; exit 1; }
+          head -n 1 "${PATCH_FILE}" | grep -qE '^(diff --git|From )' || {
+            echo "❌ Not a valid patch file. First lines:"
+            head -n 20 "${PATCH_FILE}"
+            exit 1
+          }
+
+          echo ">>> Applying BBRv3 patch using 'patch -p1' (matching local behavior)..."
+          patch -p1 --fuzz=1 --forward < "${PATCH_FILE}"
+
+          echo ">>> Verifying BBRv3 injection..."
+          if [ -f "net/ipv4/tcp_bbr3.c" ]; then
+            echo "✅ BBRv3 core source (tcp_bbr3.c) successfully injected!"
+          else
+            echo "❌ CRITICAL: tcp_bbr3.c is missing. BBRv3 will not compile."
+            exit 1
+          fi
+
+          if grep -q "bbr3" net/ipv4/Kconfig; then
+            echo "✅ BBRv3 Kconfig entry successfully injected!"
+          else
+            echo "⚠️ WARNING: BBRv3 Kconfig entry missing. BBRv3 might not be selectable."
+          fi
+
+          rm -f "${PATCH_FILE}"
+          find . -name "*.orig" -delete -o -name "*.rej" -delete
+
+      - name: ⚡ Apply Exynos 5.15 Optimization Suite
+        true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_ROOT}"
+
+          BASE_URL="https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common"
+          mkdir -p /tmp/wk_patches
+
+          # 1. Standard optimization patches for SM-M146B (Exynos / 5.15)
+          PATCHES=(
+            "optimized_mem_operations.patch"
+            "file_struct_8bytes_align.patch"
+            "reduce_cache_pressure.patch"
+            "mem_opt_prefetch.patch"
+            "int_sqrt.patch"
+            "force_tcp_nodelay.patch"
+            "reduce_gc_thread_sleep_time.patch"
+            "add_timeout_wakelocks_globally.patch"
+            "f2fs_reduce_congestion.patch"
+            "reduce_freeze_timeout.patch"
+            "add_limitation_scaling_min_freq.patch"
+            "re_write_limitation_scaling_min_freq.patch"
+            "adjust_cpu_scan_order.patch"
+            "avoid_extra_s2idle_wake_attempts.patch"
+            "disable_cache_hot_buddy.patch"
+            "f2fs_enlarge_min_fsync_blocks.patch"
+            "increase_ext4_default_commit_age.patch"
+            "increase_sk_mem_packets.patch"
+            "reduce_pci_pme_wakeups.patch"
+            "silence_irq_cpu_logspam.patch"
+            "silence_system_logspam.patch"
+            "use_unlikely_wrap_cpufreq.patch"
+          )
+
+          echo ">>> Downloading and applying standard optimization patches..."
+          for p in "${PATCHES[@]}"; do
+            echo "  -> Applying ${p}..."
+            curl -fL -sS --retry 3 --retry-delay 2 --connect-timeout 20 "${BASE_URL}/${p}" -o "/tmp/wk_patches/${p}"
+            patch -p1 --fuzz=2 --forward < "/tmp/wk_patches/${p}" || echo "  ⚠️ Warning: ${p} had minor rejects or was already applied."
+          done
+
+          # 2. Exynos Assembly memcmp optimization (Linux 5.15 symbol mode)
+          echo ">>> Applying Exynos ARM64 memcmp assembly optimization..."
+          curl -fL -sS --retry 3 --retry-delay 2 --connect-timeout 20 "${BASE_URL}/Samsung/optimise_memcmp_exynos.patch" -o "/tmp/wk_patches/optimise_memcmp_exynos.patch"
+          sed -e 's/SYM_FUNC_START(__pi_memcmp)/SYM_FUNC_START_WEAK_PI(memcmp)/' \
+              -e 's/SYM_FUNC_END(__pi_memcmp)/SYM_FUNC_END_PI(memcmp)/' \
+              -e 's/SYM_FUNC_ALIAS_WEAK(memcmp, __pi_memcmp)/EXPORT_SYMBOL_NOKASAN(memcmp)/' \
+              "/tmp/wk_patches/optimise_memcmp_exynos.patch" | patch -p1 --fuzz=2 --forward || true
+
+          # 3. Clear page 16-bytes alignment (Direct apply against SYM_FUNC_START_PI)
+          echo ">>> Applying clear_page 16-byte alignment optimization..."
+          curl -fL -sS --retry 3 --retry-delay 2 --connect-timeout 20 "${BASE_URL}/clear_page_16bytes_align.patch" -o "/tmp/wk_patches/clear_page_16bytes_align.patch"
+          patch -p1 --fuzz=2 --forward < "/tmp/wk_patches/clear_page_16bytes_align.patch" || true
+
+          # 4. Alarmtimer wakelock duration reduction
+          echo ">>> Reducing alarmtimer wakelock duration from 2s to ktime min..."
+          if [ -f "kernel/time/alarmtimer.c" ]; then
+            sed -i 's/pm_wakeup_event(dev, 2 \* MSEC_PER_SEC);/pm_wakeup_event(dev, ktime_to_ms(min) + 1);/' kernel/time/alarmtimer.c || true
+          fi
+
+          # 5. Cleanup
+          rm -rf /tmp/wk_patches
+          find . -name "*.orig" -delete -o -name "*.rej" -delete
+          echo "✅ Exynos 5.15 optimization suite applied successfully!"
+      
+      - name: 🧼 Remove -dirty tag (Commit all changes)
+        run: |
+          cd ${KERNEL_ROOT}
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action Bot"
+          echo ">>> Committing all kernel patches to remove -dirty version tag..."
+          git add -A
+          git commit -m "auto: apply all patches, configs, and optimizations" || true
+          if [ -d "KernelSU/.git" ]; then
+            cd KernelSU && git add -A && git commit -m "auto: apply su module patches" || true && cd ..
+          fi
+
+      - name: 🔨 Compile Kernel Image
+        run: |
+          set -euo pipefail
+          cd ${KERNEL_ROOT}
+          mkdir -p ${OUTDIR}
+          
+          # --- ABI & KMI Settings (Nuke checks from Blueprint) ---
+          export ABI_DEFINITION=
+          export KMI_SYMBOL_LIST_STRICT_MODE=0
+          export SKIP_ABI_CHECKS=1
+          export KMI_ENFORCE=0
+          export LTO=full
+
+          export PATH="${COMPILER_PATH}:${AOSP_TOOLS_PATH}:$PATH"
+          export CC="${COMPILER_CC}"
+          export HOSTCC="${COMPILER_CC}"
+          export LD=ld.lld
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+          export LLVM=1
+          export LLVM_IAS=1
+          export DTC_FLAGS="-@"
+          export PLATFORM_VERSION=15
+          export ANDROID_MAJOR_VERSION=t
+
+          CONFIG_ARGS="m14x_defconfig"
+          if [ "true" == "true" ] && [ -f "arch/arm64/configs/su.config" ]; then CONFIG_ARGS="$CONFIG_ARGS su.config"; fi
+          if [ "false" == "true" ] && [ -f "arch/arm64/configs/permissive.config" ]; then CONFIG_ARGS="$CONFIG_ARGS permissive.config"; fi
+          if [ "true" == "true" ] && [ -f "arch/arm64/configs/perf.config" ]; then CONFIG_ARGS="$CONFIG_ARGS perf.config"; fi
+          if [ "false" == "true" ] && [ -f "arch/arm64/configs/nethunter.config" ]; then CONFIG_ARGS="$CONFIG_ARGS nethunter.config"; fi
+          if [ "true" == "true" ] && [ -f "arch/arm64/configs/custom.config" ]; then CONFIG_ARGS="$CONFIG_ARGS custom.config"; fi
+          
+          echo "===================================================="
+          echo "Configuring and Building for m14x_defconfig via ${{ 'llvm22-ccache' }}"
+          echo "===================================================="
+          
+          make O="${OUTDIR}" CC="${CC}" $CONFIG_ARGS
+          sed -i -E 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="@jaf1887"/' "${OUTDIR}/.config"
+          grep -qx 'CONFIG_LOCALVERSION="@jaf1887"' "${OUTDIR}/.config"
+          make O="${OUTDIR}" CC="${CC}" olddefconfig
+          grep -qx 'CONFIG_LOCALVERSION="@jaf1887"' "${OUTDIR}/.config"
+          make -s O="${OUTDIR}" CC="${CC}" kernelrelease | tee "${GITHUB_WORKSPACE}/kernel-release.txt"
+          ! grep -q 'MrPankaj24' "${GITHUB_WORKSPACE}/kernel-release.txt"
+          grep -q '@jaf1887' "${GITHUB_WORKSPACE}/kernel-release.txt"
+          grep -qx 'CONFIG_KSU=y' "${OUTDIR}/.config"
+          grep -qx 'CONFIG_KSU_SUSFS=y' "${OUTDIR}/.config"
+          grep -qx 'CONFIG_BBG=y' "${OUTDIR}/.config"
+          make -j$(nproc --all) O="${OUTDIR}" CC="${CC}" 2>&1 | tee build.log
+
+          if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+            ccache -s
+          fi
+
+      - name: 🧩 Compile & Strip Modules
+        run: |
+          set -euo pipefail
+          cd ${KERNEL_ROOT}
+          mkdir -p ${MODULES_OUTDIR}
+          export PATH="${COMPILER_PATH}:${AOSP_TOOLS_PATH}:$PATH"
+          export CC="${COMPILER_CC}"
+          export LD=ld.lld
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make -j$(nproc --all) O="${OUTDIR}" CC="${CC}" INSTALL_MOD_STRIP="--strip-debug --keep-section=.ARM.attributes" INSTALL_MOD_PATH="${MODULES_OUTDIR}" modules_install 2>&1 | tee -a build.log
+
+ "${KERNEL_ROOT}/Makefile"
+          test -f "${KERNEL_ROOT}/arch/arm64/configs/m14x_defconfig"
+          git -C "${KERNEL_ROOT}" rev-parse HEAD > "${GITHUB_WORKSPACE}/pinned-source.txt"
+
+      - name: 🔧 Setup Toolchain (${{ 'llvm22-ccache' }})
+        run: |
+          set -euo pipefail
+          mkdir -p ${GITHUB_WORKSPACE}/toolchains
+          cd ${GITHUB_WORKSPACE}/toolchains
+          
+          if [[ "${{ 'llvm22-ccache' }}" == *"llvm22"* ]]; then
+            echo ">>> Installing LLVM 22 from official APT repository..."
+            wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 22
+            sudo apt-get install -y clang-22 lld-22 llvm-22
+            sudo ln -sf /usr/bin/clang-22 /usr/bin/clang || true
+            sudo ln -sf /usr/bin/ld.lld-22 /usr/bin/ld.lld || true
+            echo "COMPILER_PATH=/usr/lib/llvm-22/bin:/usr/bin" >> $GITHUB_ENV
+            if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+              echo "COMPILER_CC=ccache clang-22" >> $GITHUB_ENV
+            else
+              echo "COMPILER_CC=clang-22" >> $GITHUB_ENV
+            fi
+
+          elif [[ "${{ 'llvm22-ccache' }}" == *"google-clang-17"* ]]; then
+            echo ">>> Fetching Google Clang (r596125 - Android 17 Release)..."
+            CLANG_VER="clang-r596125"
+            DL_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android17-release/${CLANG_VER}.tar.gz"
+            mkdir -p ${CLANG_VER}
+            curl -L "$DL_URL" -o clang.tar.gz
+            tar -xzf clang.tar.gz -C ${CLANG_VER}
+            echo "COMPILER_PATH=${GITHUB_WORKSPACE}/toolchains/${CLANG_VER}/bin" >> $GITHUB_ENV
+            if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+              echo "COMPILER_CC=ccache clang" >> $GITHUB_ENV
+            else
+              echo "COMPILER_CC=clang" >> $GITHUB_ENV
+            fi
+            
+          else
+            echo ">>> Fetching Google Clang (r487747c - Android 14 Stable)..."
+            CLANG_VER="clang-r487747c"
+            DL_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/${CLANG_VER}.tar.gz"
+            mkdir -p ${CLANG_VER}
+            curl -L "$DL_URL" -o clang.tar.gz
+            tar -xzf clang.tar.gz -C ${CLANG_VER}
+            echo "COMPILER_PATH=${GITHUB_WORKSPACE}/toolchains/${CLANG_VER}/bin" >> $GITHUB_ENV
+            if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+              echo "COMPILER_CC=ccache clang" >> $GITHUB_ENV
+            else
+              echo "COMPILER_CC=clang" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: ⬇️ Download AOSP Kernel Build Tools
+        run: |
+          git clone --depth=1 -b main https://android.googlesource.com/kernel/prebuilts/build-tools ${GITHUB_WORKSPACE}/toolchains/build-tools
+          echo "AOSP_TOOLS_PATH=${GITHUB_WORKSPACE}/toolchains/build-tools/linux-x86/bin" >> $GITHUB_ENV
+
+      - name: 📝 Generate Clean su.config
+        true
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Generating su.config with SUSFS and Anti-Root bypasses forced to 'y'..."
+          cat > arch/arm64/configs/su.config << 'EOF'
+          # KernelSU
+          CONFIG_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KSU_TRACEPOINT_HOOK=n
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU=y
+          CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+
+          # SuSFS Configuration
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+
+          # Disable Samsung Anti-Root Protection
+          CONFIG_UH=n
+          CONFIG_RKP=n
+          CONFIG_KDP=n
+          CONFIG_SECURITY_DEFEX=n
+          CONFIG_PROCA=n
+          CONFIG_FIVE=n
+
+          # Force Load Kernel Modules
+          CONFIG_MODULES=y
+          CONFIG_MODULE_FORCE_LOAD=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_MODULE_FORCE_UNLOAD=y
+          CONFIG_MODVERSIONS=y
+          CONFIG_MODULE_SRCVERSION_ALL=n
+          CONFIG_MODULE_SIG=n
+          CONFIG_MODULE_COMPRESS=n
+          CONFIG_TRIM_UNUSED_KSYMS=n
+
+          # Kallsyms & NTSync Built-in
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          CONFIG_NTSYNC=y
+          CONFIG_LOCALVERSION_AUTO=n
+          CONFIG_LOCALVERSION="@MrPankaj24"
+
+          CONFIG_LTO_CLANG_FULL=y
+          CONFIG_ARCH_SUPPORTS_LTO_CLANG_FULL=y
+          # CONFIG_LTO_CLANG_THIN is not set
+          EOF
+          echo "✅ Generated arch/arm64/configs/su.config successfully!"
+
+      - name: 📝 Generate SELinux Permissive Config
+        false
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Generating permissive.config..."
+          cat > arch/arm64/configs/permissive.config << 'EOF'
+          CONFIG_SECURITY_SELINUX_DEVELOP=y
+          CONFIG_SECURITY_SELINUX_BOOTPARAM=y
+          CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0
+          # CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE is not set
+          # CONFIG_ALWAYS_ENFORCING is not set
+          CONFIG_CMDLINE_BOOL=y
+          CONFIG_CMDLINE="enforcing=0 androidboot.selinux=permissive"
+          CONFIG_CMDLINE_EXTEND=y
+          # CONFIG_CMDLINE_OVERRIDE is not set
+          EOF
+          echo "✅ Generated arch/arm64/configs/permissive.config successfully!"
+
+      - name: 📥 Fetch Individual Extra Configs
+        run: |
+          cd ${KERNEL_ROOT}/arch/arm64/configs/
+          download_config() {
+            local url="$1"
+            local filename="$2"
+            if [ -n "$url" ]; then
+              local raw_url=$(echo "$url" | sed 's/github.com/raw.githubusercontent.com/' | sed 's/\/blob\//\//')
+              echo ">>> Downloading $filename from $raw_url..."
+              curl -LSs "$raw_url" -o "$filename"
+            fi
+          }
+          if [ "true" == "true" ]; then
+            download_config "${{ env.PERF_CONFIG_URL }}" "perf.config"
+          fi
+          if [ "false" == "true" ]; then
+            download_config "${{ env.NETHUNTER_CONFIG_URL }}" "nethunter.config"
+          fi
+          if [ "true" == "true" ]; then
+            download_config "https://github.com/MrPankaj24/kernel_patch/blob/main/for_devhunter1/custom.config" "custom.config"
+          fi
+
+      - name: 📥 Fetch & Apply DroidSpaces Patch
+        true
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Downloading and applying DroidSpaces patch..."
+          curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/main/Droidspace/droidspace_for_1330.patch" -o droidspace_1330.patch
+          patch -p1 --forward < droidspace_1330.patch || true
+          rm droidspace_1330.patch
+
+      - name: 🛡️ Inject KernelSU Variant & Apply Locked SUSFS Patches
+        if: true
+        run: |
+          cd ${KERNEL_ROOT}
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu
+          
+          CHOICE="ReSukiSU"
+          BRANCH="main"
+          
+          if [[ "$CHOICE" == "ReSukiSU" ]]; then
+            echo ">>> Injecting ReSukiSU (Branch: $BRANCH)..."
+            
+            # 1. Clone the repo explicitly to the KernelSU folder
+            git clone -b $BRANCH https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+            
+            # 2. Check the commit log safely 
+            (cd KernelSU && git log -1) || true
+            
+            # 3. Apply your patches safely (if you decide to uncomment this later)
+            # echo ">>> Applying 70_ksu_safety patch for ReSukiSU..."
+            # curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/main/70_ksu_safety-resukisu-5.15.patch" -o ksu_safety.patch
+            # (cd KernelSU && patch -p1 --forward < ../ksu_safety.patch) || true
+            # rm ksu_safety.patch
+            
+            # 4. Run the setup script locally
+            bash KernelSU/kernel/setup.sh
+            
+          elif [[ "$CHOICE" == *"Official"* ]]; then
+            echo ">>> Injecting Official KernelSU (Branch/Commit: $BRANCH)..."
+            git clone -b $BRANCH https://github.com/tiann/KernelSU.git KernelSU || git clone https://github.com/tiann/KernelSU.git KernelSU
+            cd KernelSU && git checkout $BRANCH || true && cd ..
+            git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+            cd susfs4ksu && git checkout 7af04b08f86a5f811cbea28805f96d52368e005f && cd ..
+            cd KernelSU && patch -p1 --forward < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true && cd ..
+            bash KernelSU/kernel/setup.sh
+            rm -rf susfs4ksu
+            
+          elif [[ "$CHOICE" == *"Next"* ]]; then
+            echo ">>> Injecting KernelSU-Next (Branch: $BRANCH)..."
+            git clone -b $BRANCH https://github.com/rifsxd/KernelSU-Next.git KernelSU
+            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/$BRANCH/kernel/setup.sh" | bash
+            
+          elif [[ "$CHOICE" == "wksu" ]]; then
+            echo ">>> Injecting wksu (Branch: $BRANCH)..."
+            git clone -b $BRANCH https://github.com/WildKernels/Wild_KSU.git KernelSU
+            curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/$BRANCH/kernel/setup.sh" | bash -s $BRANCH
+
+          elif [[ "$CHOICE" == "KSUN_OP" ]]; then
+            echo ">>> Injecting KSUN_OP (pershoot KernelSU-Next)..."
+            if [ "true" == "true" ]; then
+              echo ">>> Setup pershoot KSUN with susfs..."
+              curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+            else
+              echo ">>> Setup KSUN with no susfs..."
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
+            fi
+            
+            echo ">>> Extracting KSU Version Info from stable branch..."
+            cd KernelSU-Next
+            
+            # Fetch the stable branch and all tags directly from the official repository
+            git fetch https://github.com/KernelSU-Next/KernelSU-Next.git stable --tags 2>/dev/null || true
+            
+            # Extract tags and commit count from FETCH_HEAD (the stable branch we just fetched)
+            KSU_GIT_VERSION=$(git rev-list --count FETCH_HEAD 2>/dev/null || echo 0)
+            KSU_GIT_TAG=$(git describe --tags --abbrev=0 FETCH_HEAD 2>/dev/null || echo "v0.0.1")
+            KSU_VERSION=$((30000 + KSU_GIT_VERSION))
+            
+            echo ">>> Injecting Version (Tag: $KSU_GIT_TAG | Version: $KSU_VERSION) into Kbuild..."
+            cd kernel
+            # Using .* ensures replacement works even if the default fallback values change in upstream updates
+            sed -i "s/^KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := ${KSU_VERSION}/" Kbuild || true
+            sed -i "s/^KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := ${KSU_GIT_TAG}/" Kbuild || true
+            cd ..
+
+            echo ">>> NUKING .git DIRECTORY TO FORCE FALLBACK VERSION..."
+            rm -rf .git
+            
+            if [ "true" == "true" ]; then
+              echo ">>> Applying static.patch for KSUN_OP..."
+              curl -LSs "https://raw.githubusercontent.com/WildKernels/Samsung_KernelSU_SUSFS/refs/heads/main/.github/actions/ksun/patches/static.patch" -o static.patch
+              patch -p1 < static.patch
+            fi
+            
+            cd ..
+            # Rename to match standard KernelSU path for the workflow
+            mv KernelSU-Next KernelSU
+          fi
+          
+          echo ">>> Rebuilding drivers/kernelsu symlink..."
+          rm -f drivers/kernelsu
+          
+          # Dynamically check where the Kconfig source actually lives
+          if [ -d "KernelSU/kernel" ]; then
+            ln -sf ../KernelSU/kernel drivers/kernelsu
+          else
+            ln -sf ../KernelSU drivers/kernelsu
+          fi
+          
+          # --- APPLY LOCKED SUSFS TO KERNEL TREE ---
+          if [ "true" == "true" ]; then
+            echo ">>> Cloning Official SUSFS repository..."
+            git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git susfs_repo
+            if [ -n "7af04b08f86a5f811cbea28805f96d52368e005f" ]; then
+              echo ">>> Locking SUSFS commit to SHA: 7af04b08f86a5f811cbea28805f96d52368e005f..."
+              cd susfs_repo && git checkout 7af04b08f86a5f811cbea28805f96d52368e005f && cd ..
+            fi
+            echo ">>> Copying SUSFS core fs and headers into kernel tree..."
+            # cp -rf susfs_repo/kernel_patches/fs/* fs/
+            # cp -rf susfs_repo/kernel_patches/include/linux/* include/linux/
+            cp susfs_repo/kernel_patches/fs/susfs.c fs/
+            cp susfs_repo/kernel_patches/include/linux/susfs_def.h include/linux/
+            cp susfs_repo/kernel_patches/include/linux/susfs.h include/linux/
+            echo ">>> Applying base patch 50_add_susfs_in_gki-android13-5.15.patch..."
+            patch -p1 --forward < susfs_repo/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch || true
+            echo ">>> Applying custom reject resolution patch 51_fix_susfs_rejects.patch..."
+            curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/refs/heads/main/for_devhunter1/51_susfs_fix.patch" -o 51_fix.patch
+            patch -p1 --forward < 51_fix.patch || true
+            rm -rf susfs_repo 51_fix.patch
+            find . -name "*.orig" -delete -o -name "*.rej" -delete
+          fi
+
+
+      # NEW MOUNT TOGGLE CONDITIONAL
+      - name: 🛡️ Apply Mount Hiding, Unicode Fix & Full LTO Patches
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Applying Unicode Bypass Fix (Linux 5.15)..."
+          curl -LSs "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common/unicode_bypass_fix_6.1-.patch" -o unicode.patch
+          patch -p1 --forward < unicode.patch || true
+          rm unicode.patch
+
+          HIDE_MODE="NoMount"
+          
+          if [[ "$HIDE_MODE" == "Zeromount" ]]; then
+            echo ">>> Applying ZeroMount Path Redirection (Linux 5.15)..."
+            curl -LSs "https://raw.githubusercontent.com/jimsterino98/Super-Builders/main/android13-5.15/WildKSU/patches/60_zeromount-android13-5.15.patch" -o zeromount.patch
+            patch -p1 --forward < zeromount.patch || true
+            rm zeromount.patch
+
+            echo ">>> Injecting ZeroMount task_mmu.c and stat.c hooks via custom fix patch..."
+            curl -LSs "https://raw.githubusercontent.com/MrPankaj24/kernel_patch/refs/heads/main/for_devhunter1/zeromount_fix_60.patch" -o zeromount_fix.patch
+            patch -p1 --forward < zeromount_fix.patch || true
+            rm zeromount_fix.patch
+
+            echo ">>> Applying ZeroMount 65 (Linux 5.15)..."
+            curl -LSs "https://raw.githubusercontent.com/Enginex0/Super-Builders/refs/heads/main/android13-5.15/ReSukiSU/patches/_archive/65_zeromount-adb-filter-android13-5.15.patch" -o zeromount65.patch
+            patch -p1 --forward < zeromount65.patch || true
+            rm zeromount65.patch
+
+            echo ">>> Enabling CONFIG_ZEROMOUNT=y in su.config..."
+            if [ -f "arch/arm64/configs/su.config" ]; then
+             echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/su.config
+            else
+             echo "CONFIG_ZEROMOUNT=y" >> arch/arm64/configs/m14x_defconfig
+            fi
+            echo "✅ ZeroMount applied successfully!"
+            
+          elif [[ "$HIDE_MODE" == "NoMount" ]]; then
+            echo ">>> Injecting NoMount (maxsteeel)..."
+            curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -
+            
+            echo ">>> Enabling CONFIG_NOMOUNT=y in su.config..."
+            if [ -f "arch/arm64/configs/su.config" ]; then
+             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/su.config
+            else
+             echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/m14x_defconfig
+            fi
+            echo "✅ NoMount applied successfully!"
+            
+          else
+            echo ">>> No Mount Hiding option selected. Skipping..."
+          fi
+
+          echo ">>> Enabling Full Clang LTO in arch/Kconfig..."
+          if [ -f "arch/Kconfig" ]; then
+            sed -i '/^default LTO_NONE$/s/default LTO_NONE/default LTO_CLANG_FULL/' arch/Kconfig || true
+            sed -i '$ a config ARCH_SUPPORTS_LTO_CLANG_FULL\n\tdef_bool y\n\tdepends on ARCH_SUPPORTS_LTO_CLANG' arch/Kconfig || true
+          fi
+
+          echo "✅ Unicode Fix & Full LTO applied successfully!"
+
+      # --- HARDCODED ALWAYS-ON: NTSYNC ---
+      - name: 📥 Fetch & Apply NTSYNC Patches (Always Enabled)
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Downloading and applying NTSYNC patches..."
+          git clone https://github.com/MrPankaj24/kernel_patch.git temp_patch_repo
+          patch -p1 --forward < temp_patch_repo/ntsync_base.patch || true
+          patch -p1 --forward < temp_patch_repo/ntsync_compat_android13-5.15.patch || true
+          rm -rf temp_patch_repo
+
+      # --- HARDCODED ALWAYS-ON: BASEBAND GUARD (BBG) ---
+      - name: 🔒 Inject Baseband Guard (BBG - Always Enabled)
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Setting up Baseband Guard..."
+          curl -LSs https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          DEFCONFIG_FILE="arch/arm64/configs/m14x_defconfig"
+          if [ -f "$DEFCONFIG_FILE" ]; then
+            echo "CONFIG_BBG=y" >> "$DEFCONFIG_FILE"
+            echo "CONFIG_LOG_BUF_SHIFT=20" >> "$DEFCONFIG_FILE"
+            echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> "$DEFCONFIG_FILE"
+          fi
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig || true
+          
+          BBG_C_FILE=$(find . -name "baseband_guard.c" | head -n 1)
+          if [ -n "$BBG_C_FILE" ] && grep -q "get_link(dentry, inode, NULL)" "$BBG_C_FILE"; then
+            curl -LSs "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/experimental/bbg/bbg_fix_get_link.patch" -o bbg_fix.patch
+            patch -p1 --forward < bbg_fix.patch || true
+          fi
+            
+      # --- HARDCODED ALWAYS-ON: RE:KERNEL ---
+      - name: ⚡ Inject Re:Kernel Optimization (Always Enabled)
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Injecting Re:Kernel background app freezing optimization..."
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git temp_rekernel_repo
+          
+          echo ">>> Preparing ./rekernel directory for patches.sh..."
+          cp -rp temp_rekernel_repo/Integrate/rekernel ./rekernel
+          cp temp_rekernel_repo/Integrate/patches.sh ./
+          chmod +x patches.sh
+          
+          echo ">>> Running patches.sh to integrate driver..."
+          ./patches.sh || echo "⚠️ Note: patches.sh reported minor warnings or was already applied."
+          
+          echo ">>> Injecting jobctl.h header fix..."
+          if [ -f "drivers/rekernel/rekernel.h" ]; then
+            sed -i '1i #include <linux/sched/jobctl.h>' drivers/rekernel/rekernel.h
+            echo "✅ Added jobctl.h to drivers/rekernel/rekernel.h"
+          else
+            echo "❌ CRITICAL: drivers/rekernel/rekernel.h not found after running patches.sh!"
+            exit 1
+          fi
+
+          echo ">>> Adding Re:Kernel configs to defconfig..."
+          DEFCONFIG_FILE="arch/arm64/configs/m14x_defconfig"
+          if [ -f "$DEFCONFIG_FILE" ]; then
+            echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG_FILE"
+            echo "CONFIG_REKERNEL_NETWORK=n" >> "$DEFCONFIG_FILE"
+            echo "✅ Enabled CONFIG_REKERNEL=y in ${DEFCONFIG_FILE}"
+          fi
+          
+          echo ">>> Cleaning up temporary Re:Kernel files..."
+          rm -rf ./rekernel temp_rekernel_repo patches.sh
+          echo "✅ Re:Kernel integrated successfully!"
+
+      - name: 🛠️ Fix Clang-20+ sizeof-pointer-memaccess Error
+        false
+        run: |
+          cd ${KERNEL_ROOT}
+          echo ">>> Patching OVT touchscreen driver for newer Clang compatibility..."
+          find drivers/input/touchscreen/ovt/ -type f -name "*.c" -exec sed -i 's/sizeof(tcm_hcd->print_buf)/SEC_CMD_STR_LEN/g' {} +
+
+      - name: 🛑 Apply CRCs Disable Patch
+        true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_ROOT}"
+
+          PATCH_URL="https://raw.githubusercontent.com/MrPankaj24/kernel_patch/refs/heads/main/for_devhunter1/CRCs_disable.patch"
+          PATCH_FILE="CRCs_disable.patch"
+
+          echo ">>> Downloading CRCs_disable patch..."
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 "${PATCH_URL}" -o "${PATCH_FILE}"
+
+          echo ">>> Validating patch..."
+          test -s "${PATCH_FILE}" || { echo "❌ Patch file is empty"; exit 1; }
+          head -n 1 "${PATCH_FILE}" | grep -qE '^(diff --git|From )' || {
+            echo "❌ Not a valid patch file. First lines:"
+            head -n 20 "${PATCH_FILE}"
+            exit 1
+          }
+
+          echo ">>> Checking applicability..."
+          if git apply --check "${PATCH_FILE}"; then
+            git apply "${PATCH_FILE}"
+            echo "✅ CRCs_disable patch applied successfully."
+          else
+            echo "❌ Patch failed to apply cleanly."
+            git apply --check --verbose "${PATCH_FILE}" || true
+            exit 1
+          fi
+
+          rm -f "${PATCH_FILE}"
+
+      # --- HARDCODED ALWAYS-ON: BBRV3 ---
+      - name: 🌐 Apply BBRv3 TCP Congestion Control Patch (Always Enabled)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_ROOT}"
+
+          PATCH_URL="https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"
+          PATCH_FILE="bbrv3.patch"
+
+          echo ">>> Downloading BBRv3 patch..."
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 "${PATCH_URL}" -o "${PATCH_FILE}"
+
+          echo ">>> Validating patch..."
+          test -s "${PATCH_FILE}" || { echo "❌ Patch file is empty"; exit 1; }
+          head -n 1 "${PATCH_FILE}" | grep -qE '^(diff --git|From )' || {
+            echo "❌ Not a valid patch file. First lines:"
+            head -n 20 "${PATCH_FILE}"
+            exit 1
+          }
+
+          echo ">>> Applying BBRv3 patch using 'patch -p1' (matching local behavior)..."
+          patch -p1 --fuzz=1 --forward < "${PATCH_FILE}"
+
+          echo ">>> Verifying BBRv3 injection..."
+          if [ -f "net/ipv4/tcp_bbr3.c" ]; then
+            echo "✅ BBRv3 core source (tcp_bbr3.c) successfully injected!"
+          else
+            echo "❌ CRITICAL: tcp_bbr3.c is missing. BBRv3 will not compile."
+            exit 1
+          fi
+
+          if grep -q "bbr3" net/ipv4/Kconfig; then
+            echo "✅ BBRv3 Kconfig entry successfully injected!"
+          else
+            echo "⚠️ WARNING: BBRv3 Kconfig entry missing. BBRv3 might not be selectable."
+          fi
+
+          rm -f "${PATCH_FILE}"
+          find . -name "*.orig" -delete -o -name "*.rej" -delete
+
+      - name: ⚡ Apply Exynos 5.15 Optimization Suite
+        true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_ROOT}"
+
+          BASE_URL="https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common"
+          mkdir -p /tmp/wk_patches
+
+          # 1. Standard optimization patches for SM-M146B (Exynos / 5.15)
+          PATCHES=(
+            "optimized_mem_operations.patch"
+            "file_struct_8bytes_align.patch"
+            "reduce_cache_pressure.patch"
+            "mem_opt_prefetch.patch"
+            "int_sqrt.patch"
+            "force_tcp_nodelay.patch"
+            "reduce_gc_thread_sleep_time.patch"
+            "add_timeout_wakelocks_globally.patch"
+            "f2fs_reduce_congestion.patch"
+            "reduce_freeze_timeout.patch"
+            "add_limitation_scaling_min_freq.patch"
+            "re_write_limitation_scaling_min_freq.patch"
+            "adjust_cpu_scan_order.patch"
+            "avoid_extra_s2idle_wake_attempts.patch"
+            "disable_cache_hot_buddy.patch"
+            "f2fs_enlarge_min_fsync_blocks.patch"
+            "increase_ext4_default_commit_age.patch"
+            "increase_sk_mem_packets.patch"
+            "reduce_pci_pme_wakeups.patch"
+            "silence_irq_cpu_logspam.patch"
+            "silence_system_logspam.patch"
+            "use_unlikely_wrap_cpufreq.patch"
+          )
+
+          echo ">>> Downloading and applying standard optimization patches..."
+          for p in "${PATCHES[@]}"; do
+            echo "  -> Applying ${p}..."
+            curl -fL -sS --retry 3 --retry-delay 2 --connect-timeout 20 "${BASE_URL}/${p}" -o "/tmp/wk_patches/${p}"
+            patch -p1 --fuzz=2 --forward < "/tmp/wk_patches/${p}" || echo "  ⚠️ Warning: ${p} had minor rejects or was already applied."
+          done
+
+          # 2. Exynos Assembly memcmp optimization (Linux 5.15 symbol mode)
+          echo ">>> Applying Exynos ARM64 memcmp assembly optimization..."
+          curl -fL -sS --retry 3 --retry-delay 2 --connect-timeout 20 "${BASE_URL}/Samsung/optimise_memcmp_exynos.patch" -o "/tmp/wk_patches/optimise_memcmp_exynos.patch"
+          sed -e 's/SYM_FUNC_START(__pi_memcmp)/SYM_FUNC_START_WEAK_PI(memcmp)/' \
+              -e 's/SYM_FUNC_END(__pi_memcmp)/SYM_FUNC_END_PI(memcmp)/' \
+              -e 's/SYM_FUNC_ALIAS_WEAK(memcmp, __pi_memcmp)/EXPORT_SYMBOL_NOKASAN(memcmp)/' \
+              "/tmp/wk_patches/optimise_memcmp_exynos.patch" | patch -p1 --fuzz=2 --forward || true
+
+          # 3. Clear page 16-bytes alignment (Direct apply against SYM_FUNC_START_PI)
+          echo ">>> Applying clear_page 16-byte alignment optimization..."
+          curl -fL -sS --retry 3 --retry-delay 2 --connect-timeout 20 "${BASE_URL}/clear_page_16bytes_align.patch" -o "/tmp/wk_patches/clear_page_16bytes_align.patch"
+          patch -p1 --fuzz=2 --forward < "/tmp/wk_patches/clear_page_16bytes_align.patch" || true
+
+          # 4. Alarmtimer wakelock duration reduction
+          echo ">>> Reducing alarmtimer wakelock duration from 2s to ktime min..."
+          if [ -f "kernel/time/alarmtimer.c" ]; then
+            sed -i 's/pm_wakeup_event(dev, 2 \* MSEC_PER_SEC);/pm_wakeup_event(dev, ktime_to_ms(min) + 1);/' kernel/time/alarmtimer.c || true
+          fi
+
+          # 5. Cleanup
+          rm -rf /tmp/wk_patches
+          find . -name "*.orig" -delete -o -name "*.rej" -delete
+          echo "✅ Exynos 5.15 optimization suite applied successfully!"
+      
+      - name: 🧼 Remove -dirty tag (Commit all changes)
+        run: |
+          cd ${KERNEL_ROOT}
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action Bot"
+          echo ">>> Committing all kernel patches to remove -dirty version tag..."
+          git add -A
+          git commit -m "auto: apply all patches, configs, and optimizations" || true
+          if [ -d "KernelSU/.git" ]; then
+            cd KernelSU && git add -A && git commit -m "auto: apply su module patches" || true && cd ..
+          fi
+
+      - name: 🔨 Compile Kernel Image
+        run: |
+          set -euo pipefail
+          cd ${KERNEL_ROOT}
+          mkdir -p ${OUTDIR}
+          
+          # --- ABI & KMI Settings (Nuke checks from Blueprint) ---
+          export ABI_DEFINITION=
+          export KMI_SYMBOL_LIST_STRICT_MODE=0
+          export SKIP_ABI_CHECKS=1
+          export KMI_ENFORCE=0
+          export LTO=full
+
+          export PATH="${COMPILER_PATH}:${AOSP_TOOLS_PATH}:$PATH"
+          export CC="${COMPILER_CC}"
+          export HOSTCC="${COMPILER_CC}"
+          export LD=ld.lld
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+          export LLVM=1
+          export LLVM_IAS=1
+          export DTC_FLAGS="-@"
+          export PLATFORM_VERSION=15
+          export ANDROID_MAJOR_VERSION=t
+
+          CONFIG_ARGS="m14x_defconfig"
+          if [ "true" == "true" ] && [ -f "arch/arm64/configs/su.config" ]; then CONFIG_ARGS="$CONFIG_ARGS su.config"; fi
+          if [ "false" == "true" ] && [ -f "arch/arm64/configs/permissive.config" ]; then CONFIG_ARGS="$CONFIG_ARGS permissive.config"; fi
+          if [ "true" == "true" ] && [ -f "arch/arm64/configs/perf.config" ]; then CONFIG_ARGS="$CONFIG_ARGS perf.config"; fi
+          if [ "false" == "true" ] && [ -f "arch/arm64/configs/nethunter.config" ]; then CONFIG_ARGS="$CONFIG_ARGS nethunter.config"; fi
+          if [ "true" == "true" ] && [ -f "arch/arm64/configs/custom.config" ]; then CONFIG_ARGS="$CONFIG_ARGS custom.config"; fi
+          
+          echo "===================================================="
+          echo "Configuring and Building for m14x_defconfig via ${{ 'llvm22-ccache' }}"
+          echo "===================================================="
+          
+          make O="${OUTDIR}" CC="${CC}" $CONFIG_ARGS
+          make -j$(nproc --all) O="${OUTDIR}" CC="${CC}" 2>&1 | tee build.log
+
+          if [[ "${{ 'llvm22-ccache' }}" == *"ccache"* ]]; then
+            ccache -s
+          fi
+
+      - name: 🧩 Compile & Strip Modules
+        run: |
+          set -euo pipefail
+          cd ${KERNEL_ROOT}
+          mkdir -p ${MODULES_OUTDIR}
+          export PATH="${COMPILER_PATH}:${AOSP_TOOLS_PATH}:$PATH"
+          export CC="${COMPILER_CC}"
+          export LD=ld.lld
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make -j$(nproc --all) O="${OUTDIR}" CC="${CC}" INSTALL_MOD_STRIP="--strip-debug --keep-section=.ARM.attributes" INSTALL_MOD_PATH="${MODULES_OUTDIR}" modules_install 2>&1 | tee -a build.log || true
+
+
+      # No flashable ZIP, release, Telegram upload or device writes.
+      - name: Save unvalidated compiled files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staged
+          test -s "${OUTDIR}/arch/arm64/boot/Image"
+          cp "${OUTDIR}/arch/arm64/boot/Image" staged/Image
+          cp "${OUTDIR}/.config" staged/kernel.config
+          cp pinned-source.txt kernel-release.txt staged/
+          ( cd "${MODULES_OUTDIR}" && tar -czf "${GITHUB_WORKSPACE}/staged/matching-modules-unvalidated.tar.gz" lib )
+          find "${OUTDIR}/arch/arm64/boot/dts" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print0 | tar --null -czf staged/device-trees-unvalidated.tar.gz -T -
+          sha256sum staged/Image staged/kernel.config > staged/SHA256SUMS
+          cat > staged/READ-ME-FIRST.txt <<'EOF'
+          EXPERIMENTAL BUILD - NOT FLASHABLE. The source snapshot is pinned but
+          many upstream Project-24 patch URLs remain unpinned. Review logs,
+          source diff, kernelrelease, config, and matching modules.
+          Do not combine this Image with old @MrPankaj24 modules.
+          EOF
+
+      - name: Upload experimental compiled files
+        uses: actions/upload-artifact@v4
+        with:
+          name: JAF-Run128-UNVALIDATED-${{ github.run_number }}
+          path: staged/
+          if-no-files-found: error
+          retention-days: 7
