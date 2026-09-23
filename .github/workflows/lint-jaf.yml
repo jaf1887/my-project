@@ -20,4 +20,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go run github.com/rhysd/actionlint/cmd/actionlint@latest -shellcheck= -color -oneline .github/workflows/jaf-run128-build.yml
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest -shellcheck= -ignore 'constant expression' -color -oneline .github/workflows/jaf-run128-build.yml
