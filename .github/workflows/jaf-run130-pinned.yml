@@ -82,7 +82,7 @@ jobs:
           make -C kernel-src O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 LLVM=1 olddefconfig
           bash scripts/kernel-preflight.sh "$cfg"
-          if ! grep -q '^CONFIG_LOCALVERSION_AUTO=n$' "$cfg"; then
+          if ! grep -qxF '# CONFIG_LOCALVERSION_AUTO is not set' "$cfg"; then
             echo 'STOP: CONFIG_LOCALVERSION_AUTO must be disabled' >&2
             exit 3
           fi
