@@ -53,10 +53,41 @@ grep -qF 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig ||
 cp susfs_repo/kernel_patches/fs/susfs.c fs/
 cp susfs_repo/kernel_patches/include/linux/susfs_def.h include/linux/
 cp susfs_repo/kernel_patches/include/linux/susfs.h include/linux/
-patch --batch --forward -p1 < susfs_repo/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch ||
-  die 'SUSFS 50 patch conflict: source needs manual review'
-patch --batch --forward -p1 < patch_repo/for_devhunter1/51_susfs_fix.patch ||
-  die 'Project-24 SUSFS 51 patch conflict: source needs manual review'
+# Preserve complete output and rejected hunks as downloadable Actions evidence.
+# Do not stop at the first "FAILED" message without preserving WHY it failed.
+mkdir -p "$JAF_REPO_ROOT/work/reports"
+capture_patch_failure() {
+  local label="$1"
+  local report="$JAF_REPO_ROOT/work/reports"
+  printf '\nSTOP: %s contains rejected source hunks.\n' "$label" >&2
+  echo 'Rejected files:' >&2
+  find fs include kernel security -type f -name '*.rej' -print 2>/dev/null | tee "$report/rejected-files.txt" >&2 || true
+  if [[ -s "$report/rejected-files.txt" ]]; then
+    # Preserve relative source paths within the archive. Partial patch state
+    # must never be used for compilation or treated as a valid release.
+    tar -czf "$report/rejected-hunks.tar.gz" -T "$report/rejected-files.txt" ||
+      echo 'Could not archive all reject files' >&2
+    for rejected in $(cat "$report/rejected-files.txt"); do
+      if [[ "$rejected" == 'fs/namespace.c.rej' ]]; then
+        cp "$rejected" "$report/fs-namespace.rej.txt"
+      fi
+    done
+  fi
+  printf '%s\n' \
+    'Upstream 50 patch may only partially fit this pinned devhunter1 revision.' \
+    'Do NOT skip these hooks or delete rejects: inspect the .rej files and port the missing code.' >&2
+  exit 3
+}
+if ! patch --batch --forward -p1 < susfs_repo/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch \
+     > "$JAF_REPO_ROOT/work/reports/susfs-50-patch.log" 2>&1; then
+  cat "$JAF_REPO_ROOT/work/reports/susfs-50-patch.log" >&2
+  capture_patch_failure 'SUSFS 50'
+fi
+if ! patch --batch --forward -p1 < patch_repo/for_devhunter1/51_susfs_fix.patch \
+     > "$JAF_REPO_ROOT/work/reports/susfs-51-patch.log" 2>&1; then
+  cat "$JAF_REPO_ROOT/work/reports/susfs-51-patch.log" >&2
+  capture_patch_failure 'Project-24 SUSFS 51'
+fi
 
 # BBG: integrate the *pinned* tree without curl | bash or a moving main.
 ln -s ../Baseband-guard security/baseband-guard
