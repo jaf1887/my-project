@@ -78,7 +78,13 @@ capture_patch_failure() {
     'Do NOT skip these hooks or delete rejects: inspect the .rej files and port the missing code.' >&2
   exit 3
 }
-if ! patch --batch --forward -p1 < susfs_repo/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch \
+# Run #2 proved that 51 supplies the Samsung replacements for four header
+# hunks in 50. Prepare that composition before patching; never tolerate rejects.
+python3 "$JAF_REPO_ROOT/scripts/prepare-run130-susfs.py" \
+  susfs_repo/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch \
+  patch_repo/for_devhunter1/51_susfs_fix.patch \
+  "$JAF_REPO_ROOT/work/reports/susfs-50-prepared.patch"
+if ! patch --batch --forward -p1 < "$JAF_REPO_ROOT/work/reports/susfs-50-prepared.patch" \
      > "$JAF_REPO_ROOT/work/reports/susfs-50-patch.log" 2>&1; then
   cat "$JAF_REPO_ROOT/work/reports/susfs-50-patch.log" >&2
   capture_patch_failure 'SUSFS 50'
