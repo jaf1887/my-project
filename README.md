@@ -4,11 +4,11 @@
 
 **Goal:** upgrade the kernel's *built-in ReSukiSU* while preserving the Project-24 device/vendor kernel changes and existing supported root/SUSFS features. This is **NOT a completed build or flashable ZIP**.
 
-## Pinned upgrade target (checked 22 September 2026)
+## Pinned integration reference (updated 24 September 2026)
 
-- Existing uploaded AnyKernel3 ZIP reports built-in `v4.2.0-rc2-6d18926a@ReSukiSU`.
-- New integration source: [`ReSukiSU/ReSukiSU@9be0f347f38e790c846915bd5f9c24b337f85c4e`](https://github.com/ReSukiSU/ReSukiSU/commit/9be0f347f38e790c846915bd5f9c24b337f85c4e).
-- GitHub compare shows this target **12 commits ahead** of `6d18926a`. This is a *development revision*, not a promise of a stable, tested release for SM-M146B. Examine [upstream changes](https://github.com/ReSukiSU/ReSukiSU/compare/6d18926a...9be0f347f38e790c846915bd5f9c24b337f85c4e) for compatibility.
+- Oldest uploaded Image reported `v4.2.0-rc2-6d18926a@ReSukiSU`; the next reported `v4.2.0-rc2-9be0f347@ReSukiSU`.
+- The [24 September 2026 uploaded ZIP audit](docs/PROJECT24_2026-09-24_AUDIT.md) confirms the latest Image reports **`v4.2.0-rc3-6803643e@ReSukiSU`** and still uses `5.15.211-android13-8@MrPankaj24`.
+- Current pinned ReSukiSU integration reference: [`6803643e19e2e6e8287f96461aabb93bdd6c47fa`](https://github.com/ReSukiSU/ReSukiSU/commit/6803643e19e2e6e8287f96461aabb93bdd6c47fa). This pin is not proof of tested JAF compatibility.
 
 **Do not confuse the Manager APK/ksud update with a kernel update.** A newly installed manager does not replace the ReSukiSU code compiled into the running kernel.
 
@@ -17,7 +17,7 @@
 - [`docs/DEVICE.md`](docs/DEVICE.md) — firmware and `uname -r` observed in Termux.
 - [`docs/PROJECT24_ZIP_INSPECTION.md`](docs/PROJECT24_ZIP_INSPECTION.md) — archive inspection, compiled kernel string and embedded `.config` characteristics.
 - User-uploaded ZIP is a prebuilt AnyKernel3 package with an `Image`, **not** the complete matching kernel source. Its installer disables device checking (`do.devicecheck=0`).
-- A separate public [`MrPankaj24/SM-M146B-Kernel-Source`](https://github.com/MrPankaj24/SM-M146B-Kernel-Source) revision declares **5.15.153**, unlike the uploaded ZIP's **5.15.211**. The base release string alone would not prove the correct Samsung/Project-24 patches even if the number matched.
+- A separate public [`MrPankaj24/SM-M146B-Kernel-Source`](https://github.com/MrPankaj24/SM-M146B-Kernel-Source) revision declares **5.15.153**, unlike the uploaded ZIP's **5.15.211**. See [SOURCE_AUDIT.md](docs/SOURCE_AUDIT.md) for the **devhunter1** 5.15.211 tree identified from the original Project-24 Run128 workflow; matching the September 24 binary to an exact source revision is still pending.
 
 ## Source-gated build workflow
 
@@ -27,7 +27,7 @@ On a **Linux PC**, after obtaining an exact source commit that contains the matc
 export SOURCE_URL='https://github.com/REPLACE_WITH_VERIFIED_MATCHING_KERNEL.git'
 export SOURCE_REF='REPLACE_WITH_VERIFIED_KERNEL_COMMIT'
 export EXPECTED_KERNEL_VERSION='5.15.211'
-export RESUKISU_SHA='9be0f347f38e790c846915bd5f9c24b337f85c4e'
+export RESUKISU_SHA='6803643e19e2e6e8287f96461aabb93bdd6c47fa'
 bash scripts/prepare-kernel.sh
 ```
 
@@ -68,4 +68,4 @@ The newly located [5.15.209 Samsung Exynos source](https://github.com/MrPankaj24
 - [Experimental source-gated Image/modules build](.github/workflows/build-kernel.yml)
 - [Add extracted configuration](configs/README.md)
 
-The source-gated build intentionally cannot produce a valid new 5.15.211 kernel with the currently identified 5.15.153 or 5.15.209 source trees. Do not treat an Actions artifact as flashable without matching source/modules and on-device testing.
+The experimental workflow now uses a pinned observed **devhunter1 5.15.211** source revision, but does **not** reproduce the original Project-24 patch workflow or establish that its output is compatible with the September 24 uploaded image. Do not treat an Actions artifact as flashable without matching source/modules and on-device testing.
