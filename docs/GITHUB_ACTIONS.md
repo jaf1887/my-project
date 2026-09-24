@@ -1,6 +1,6 @@
 # GitHub Actions setup — JAF Kernel
 
-Two workflows are committed to `main`. The cloud runner is Ubuntu 24.04. **Neither workflow flashes the phone or publishes a release.**
+Three workflows are committed to `main`. The cloud runner is Ubuntu 24.04. **Neither workflow flashes the phone or publishes a release.**
 
 ## A. Automatic validation
 
@@ -22,7 +22,19 @@ Build steps: validate inputs/config → install compilation packages → clone e
 
 The hosted runner's available Clang may not match the original `Ubuntu clang 22.1.8`. This is an experimental scaffold, **not a reproducible Project-24 toolchain**. The exact source's build script, Clang/prebuilts and vendor toolchain must be matched before expecting compilation or device compatibility. A build that exits with success still needs KMI/CRC, module, firmware, device-tree, boot-format and on-device testing. The artifact is intentionally not called a flashable ZIP.
 
-**At present, neither of the two located public source candidates (`5.15.153` and `5.15.209`) passes the required `5.15.211` source gate. Do not enter either into the build workflow expecting a usable kernel.** Resolve the source and exact defconfig first, or independently port/validate the source and matching modules.
+**Source-discovery update:** the original Run130 workflow identifies the devhunter1 Samsung 5.15.211 source and `m14x_defconfig`; see [SOURCE_AUDIT.md](SOURCE_AUDIT.md). This existing experimental workflow is intentionally an earlier scaffold and is not the new pinned Run130 integration workflow below.
+
+## C. NEW: Run130-pinned experimental source integration and compilation
+
+[Run130 pinned build](../.github/workflows/jaf-run130-pinned.yml) can be selected at **Actions → JAF Run130 Pinned Experimental Build → Run workflow**. It does **not** need the owner's original extracted full config uploaded: it generates a fresh config from the pinned source `m14x_defconfig`, enables selected agreed settings and uploads its **actual resolved configuration** for review.
+
+The workflow pins the *observed* devhunter1 source commit `906601a25962356b037817ed5deaa483b44b9233`, ReSukiSU `6803643e19e2e6e8287f96461aabb93bdd6c47fa`, SUSFS `7af04b08f86a5f811cbea28805f96d52368e005f`, Baseband-guard `a54e0dc6cf0aff4dd87fec49644a02d2eb612905` and Project-24 auxiliary patch repo `82c26549197e0288167514c4054e503049bc1051`. Only the source repo and upstream ReSukiSU SHA have been tied to prior inspection and the new Image identifier respectively; these are **not proven to be all the exact Run130 dependencies**.
+
+[Integration script](../scripts/integrate-run130.sh) clones each source at its pinned commit, sets up ReSukiSU, applies Run130 SUSFS core plus Project-24-specific fix, wires Baseband-guard and applies the Exynos 1330 Droidspaces ABI padding patch. Required patch failures **stop the job** instead of being hidden by `|| true`. It then attempts to configure and compile a raw `Image`, fresh matching `.ko` modules and DTB/DTBO files. Uploads logs, hashes, configs and any build outputs as `jaf-run130-experimental-<run number>` for diagnosis, even on build failure.
+
+**Caveats:** This is a deliberately limited, source-level **engineering attempt**, not a reproduction of every Run130 optimization or its NoMount/Re:Kernel/BBRv3/other patches. It uses the runner's distro Clang rather than the specific original LLVM 22/ccache toolchain. It does not establish module ABI or on-device compatibility. The Droidspaces patch supplies SYSVIPC kABI padding but **does not itself enable all absent Droidspaces configs**. **No resulting artifact is a flashable ZIP.**
+
+If integration stops, open the failed Actions run and share the **first failed patch or compiler error**, not just the final failure banner. This is useful information to fix the source port properly.
 
 ### If Actions is not visible
 
