@@ -1,0 +1,129 @@
+name: JAF Run130 Pinned Experimental Build
+
+# Manual only; never flashes a device and never creates a GitHub release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jaf-run130-pinned
+  cancel-in-progress: false
+
+jobs:
+  source-integrate-and-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: 906601a25962356b037817ed5deaa483b44b9233
+      RESUKISU_SHA: 6803643e19e2e6e8287f96461aabb93bdd6c47fa
+      SUSFS_SHA: 7af04b08f86a5f811cbea28805f96d52368e005f
+      BBG_SHA: a54e0dc6cf0aff4dd87fec49644a02d2eb612905
+      PATCHES_SHA: 82c26549197e0288167514c4054e503049bc1051
+    steps:
+      - name: Check out JAF build scripts
+        uses: actions/checkout@v4
+
+      - name: Install compiler and build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            libncurses-dev dwarves device-tree-compiler \
+            clang lld llvm rsync cpio kmod python3 git \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          clang --version | head -n 1
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Clone pinned Samsung M14 kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/devhunter1/android_kernel_samsung_s5e8535.git kernel-src
+          git -C kernel-src checkout --detach "$SOURCE_SHA"
+          [[ "$(git -C kernel-src rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          EXPECTED_KERNEL_VERSION=5.15.211 \
+            bash scripts/verify-source.sh kernel-src
+          [[ -f kernel-src/arch/arm64/configs/m14x_defconfig ]]
+
+      - name: Integrate pinned Run130 root, SUSFS, BBG and Droidspaces sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SOURCE_SHA="$SOURCE_SHA" \
+          RESUKISU_SHA="$RESUKISU_SHA" \
+          SUSFS_SHA="$SUSFS_SHA" \
+          BBG_SHA="$BBG_SHA" \
+          PATCHES_SHA="$PATCHES_SHA" \
+            bash scripts/integrate-run130.sh kernel-src
+
+      - name: Configure JAF identity and required features
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out work/reports
+          make -C kernel-src O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 LLVM=1 m14x_defconfig
+          cfg="$GITHUB_WORKSPACE/out/.config"
+          kernel-src/scripts/config --file "$cfg" \
+            --disable LOCALVERSION_AUTO \
+            --set-str LOCALVERSION '@jaf1887' \
+            --enable KSU --enable KSU_SUSFS \
+            --enable BBG --enable MODULES --enable MODVERSIONS
+          lsm="$(sed -n 's/^CONFIG_LSM="\([^"]*\)"/\1/p' "$cfg")"
+          [[ -n "$lsm" ]] || { echo 'Missing CONFIG_LSM' >&2; exit 3; }
+          if [[ ",$lsm," != *",baseband_guard,"* ]]; then
+            kernel-src/scripts/config --file "$cfg" --set-str LSM "$lsm,baseband_guard"
+          fi
+          make -C kernel-src O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 LLVM=1 olddefconfig
+          bash scripts/kernel-preflight.sh "$cfg"
+          if ! grep -q '^CONFIG_LOCALVERSION_AUTO=n$' "$cfg"; then
+            echo 'STOP: CONFIG_LOCALVERSION_AUTO must be disabled' >&2
+            exit 3
+          fi
+          cp "$cfg" work/reports/resolved-jaf.config
+          clang --version | head -n 1 > work/reports/compiler.txt
+
+      - name: Compile raw Image plus MATCHING modules and device trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C kernel-src O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 LLVM=1 -j"$(nproc)" \
+            Image modules dtbs 2>&1 | tee work/reports/build.log
+          test -s out/arch/arm64/boot/Image
+          test "$(find out -type f -name '*.ko' | wc -l)" -gt 0
+          test "$(find out -type f \( -name '*.dtb' -o -name '*.dtbo' \) | wc -l)" -gt 0
+
+      - name: Stage raw artifacts and provenance (not flashable)
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p staged
+          cp work/reports/* staged/ 2>/dev/null || true
+          if [[ -s out/arch/arm64/boot/Image ]]; then
+            cp out/arch/arm64/boot/Image staged/Image
+            sha256sum staged/Image > staged/SHA256SUMS
+          fi
+          if [[ -f out/.config ]]; then cp out/.config staged/kernel.config; fi
+          if find out -type f -name '*.ko' -print -quit 2>/dev/null | grep -q .; then
+            find out -type f -name '*.ko' -print0 | tar --null -czf staged/modules-not-flashable.tar.gz -T -
+          fi
+          if find out -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print -quit 2>/dev/null | grep -q .; then
+            find out -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print0 | tar --null -czf staged/device-trees-not-flashable.tar.gz -T -
+          fi
+          echo 'DO NOT FLASH: experimental source build; original Run130 includes additional unported patches.' > staged/READ_ME_FIRST.txt
+
+      - name: Upload build evidence even if compilation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jaf-run130-experimental-${{ github.run_number }}
+          path: staged/
+          if-no-files-found: warn
+          retention-days: 7
