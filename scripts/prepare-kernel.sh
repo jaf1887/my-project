@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Prepares sources on a Linux build PC. DOES NOT build or flash a kernel.
-# ReSukiSU target verified 22 Sep 2026: 12 commits after ZIP's 6d18926a base.
+# Target updated 24 Sep 2026 from owner-provided Project-24 rc3 Image.
+# Exact upstream SHA verified on GitHub; source integration and Samsung compatibility still untested.
 : "${SOURCE_URL:?Set SOURCE_URL to the matching SM-M146B Project-24 kernel source Git URL}"
 : "${SOURCE_REF:?Set SOURCE_REF to the verified kernel source commit SHA or immutable tag}"
-RESUKISU_SHA="${RESUKISU_SHA:-9be0f347f38e790c846915bd5f9c24b337f85c4e}"
+RESUKISU_SHA="${RESUKISU_SHA:-6803643e19e2e6e8287f96461aabb93bdd6c47fa}"
 EXPECTED_KERNEL_VERSION="${EXPECTED_KERNEL_VERSION:-5.15.211}"
 WORKDIR="${WORKDIR:-$PWD/work}"
 
