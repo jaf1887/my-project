@@ -1,8 +1,8 @@
-# Samsung Galaxy M14 5G — Project-24 ReSukiSU update
+# JAF Kernel — Samsung Galaxy M14 5G
 
 **Target device:** `SM-M146B`, ReCoreUI 8.1 Ultra. **Existing kernel:** `5.15.211-android13-8@MrPankaj24`.
 
-**Goal:** upgrade the kernel's *built-in ReSukiSU* while preserving the Project-24 device/vendor kernel changes and existing supported root/SUSFS features. This is **NOT a completed build or flashable ZIP**.
+**Goal:** compile an independently built `5.15.211-android13-8@jaf1887` Samsung Galaxy M14 5G kernel, rebuilding matching modules and retaining compatible ReSukiSU, SUSFS and Baseband-guard features. This is **NOT a completed build or flashable ZIP**.
 
 ## Pinned integration reference (updated 24 September 2026)
 
@@ -69,3 +69,8 @@ The newly located [5.15.209 Samsung Exynos source](https://github.com/MrPankaj24
 - [Add extracted configuration](configs/README.md)
 
 The experimental workflow now uses a pinned observed **devhunter1 5.15.211** source revision, but does **not** reproduce the original Project-24 patch workflow or establish that its output is compatible with the September 24 uploaded image. Do not treat an Actions artifact as flashable without matching source/modules and on-device testing.
+
+
+## Active next step — Run130 pinned integration attempt
+
+The new [Run130-pinned experimental GitHub Actions workflow](.github/workflows/jaf-run130-pinned.yml) uses the identified devhunter1 5.15.211 Samsung source, pinned ReSukiSU RC3, SUSFS, Baseband-guard and the Exynos 1330 Droidspaces patch. It **attempts** to build a raw Image with newly built modules and DTBs while preserving compiler and patch logs. It does **not** flash, publish a release, or claim to reproduce all of Pankaj's optimization patches. Read [Run130 build instructions](docs/GITHUB_ACTIONS.md#c-new-run130-pinned-experimental-source-integration-and-compilation). Its output is not flashable or known bootable; first fix any failed source integration / build errors, then review ABI and real-device testing before package work.
