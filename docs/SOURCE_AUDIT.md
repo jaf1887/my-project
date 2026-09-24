@@ -2,7 +2,7 @@
 
 ## 24 September 2026: newer binary reference
 
-The owner uploaded another Project-24 ZIP. [Offline comparison](PROJECT24_2026-09-24_AUDIT.md) shows that **only** its kernel `Image` differs from the prior newer ZIP; it now reports ReSukiSU `v4.2.0-rc3-6803643e` and the same base kernel and configuration. The Run128 source/build findings below remain a useful reconstruction starting point, **not proof** that its tagged recipe or pinned observed source commit produced this latest image. Obtain the matching release/build log or author-provided source revision before claiming binary reproducibility.
+The owner uploaded another Project-24 ZIP. [Offline comparison](PROJECT24_2026-09-24_AUDIT.md) shows that **only** its kernel `Image` differs from the prior newer ZIP; it now reports ReSukiSU `v4.2.0-rc3-6803643e` and the same base kernel and configuration. The owner supplied [Run130](https://github.com/MrPankaj24/Project-24/releases/tag/P24-m14x-ReSukiSU-Run130), and GitHub confirms its tag resolves to the **same builder commit as Run128** (`695609d732e99984950b09db5d82901c68f2e514`). The recipe is the same, while moving external dependencies may have changed. The Run128 source/build findings below remain a useful reconstruction starting point, **not proof** that the observed source commit produced the latest image. The new ZIP-to-release asset hash and complete Actions run 130 dependency SHAs/logs remain to be verified. See [Run130 audit](PROJECT24_2026-09-24_AUDIT.md).
 
 ## KEY FINDING — original Run128 builder and kernel source located
 
