@@ -1,6 +1,10 @@
 # Source audit — corrected using Project-24 Run128 release (22 September 2026)
 
-## KEY FINDING — actual builder and kernel source located
+## 24 September 2026: newer binary reference
+
+The owner uploaded another Project-24 ZIP. [Offline comparison](PROJECT24_2026-09-24_AUDIT.md) shows that **only** its kernel `Image` differs from the prior newer ZIP; it now reports ReSukiSU `v4.2.0-rc3-6803643e` and the same base kernel and configuration. The Run128 source/build findings below remain a useful reconstruction starting point, **not proof** that its tagged recipe or pinned observed source commit produced this latest image. Obtain the matching release/build log or author-provided source revision before claiming binary reproducibility.
+
+## KEY FINDING — original Run128 builder and kernel source located
 
 The owner provided the release [Project-24 Run128](https://github.com/MrPankaj24/Project-24/releases/tag/P24-m14x-ReSukiSU-Run128). The release metadata lists `m14x_defconfig`, `lineage-23.2`, `llvm22-ccache`, root variant `ReSukiSU`, and SUSFS commit `7af04b08f86a5f811cbea28805f96d52368e005f`. Its three release assets have SHA-256 hashes **identical** to the user's newer kernel, DTB and module ZIPs recorded in the inspection reports. Thus this is the published release for the files inspected earlier, not an unrelated build.
 
