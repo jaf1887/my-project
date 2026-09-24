@@ -25,9 +25,23 @@ The embedded config retains `CONFIG_LOCALVERSION="@MrPankaj24"`, `CONFIG_KSU=y`,
 
 The AnyKernel3 installer is byte-identical to the previous ZIP. It specifies `block=boot`, `do.devicecheck=0`, `do.modules=0`. It does not ship new modules or device trees. Owner's *separate older* 300-module archive still embeds `5.15.211-android13-8@MrPankaj24`; identical vermagic naming is not proof that module ABI is unchanged. Rebuild and test appropriate modules for `@jaf1887`; never rename existing `.ko` metadata to suggest compatibility.
 
+## Run130 release tag traced (owner-supplied URL)
+
+The owner supplied [Project-24 Run130](https://github.com/MrPankaj24/Project-24/releases/tag/P24-m14x-ReSukiSU-Run130). GitHub's commit resolution and compare show that **Run128 and Run130 release tags point to exactly the same build-repository commit** [`695609d732e99984950b09db5d82901c68f2e514`](https://github.com/MrPankaj24/Project-24/commit/695609d732e99984950b09db5d82901c68f2e514); comparison is identical, zero commits ahead/behind. The repository recipe is therefore unchanged between the tags; the separate GitHub Actions runs could still have pulled different **moving upstream kernel/ReSukiSU branch heads**, yielding different compiled `Image` files.
+
+Verified [Run130-tagged `.github/workflows/op.yml`](https://github.com/MrPankaj24/Project-24/blob/P24-m14x-ReSukiSU-Run130/.github/workflows/op.yml) declares these **default inputs**, not independently verified actual run overrides:
+
+- `KERNEL_SOURCE=https://github.com/devhunter1/android_kernel_samsung_s5e8535.git`, `KERNEL_BRANCH=lineage-23.2`, `DEVICE_DEFCONFIG=m14x_defconfig`.
+- `toolchain_mode=llvm22-ccache`, `KSU_VARIANT=ReSukiSU`, `MANAGER_BRANCH=main`.
+- `ENABLE_SUSFS=true`, `SUSFS_SHA=7af04b08f86a5f811cbea28805f96d52368e005f`.
+- `ENABLE_DROIDSPACE=true`; pulls `MrPankaj24/kernel_patch/main/Droidspace/droidspace_for_1330.patch`.
+- Baseband-guard setup and `CONFIG_BBG=y` are always invoked in the workflow; `CONFIG_LOCALVERSION="@MrPankaj24"` is set in the generated root config.
+
+**Build reproducibility caution:** The workflow shallow-clones the *moving* `lineage-23.2` branch, clones ReSukiSU `main`, fetches some `main` patches, and permits `patch ... || true` failures. Its release-body descriptions are assertions, not verification of every runtime feature; in particular the inspected `Image` still reports disabled Droidspaces-related cgroup/network configs. A pinned tag in the **builder repo** does not pin its external source dependencies. To reproduce Run130 exactly, capture GitHub Actions run 130 logs/provenance, source HEAD, ReSukiSU SHA, toolchain digest and patch results; then compare the published release asset's SHA-256 against the uploaded ZIP SHA-256 above. The release metadata/asset hash could not be fetched automatically through the available release API here, so the user's identification of the ZIP as Run130 is not yet independently hash-verified.
+
 ## Consequences for JAF Kernel
 
 - This ZIP is now the **latest owner-provided compiled reference image** and reports ReSukiSU `v4.2.0-rc3-6803643e`.
 - It still contains **no complete source tree**, no `@jaf1887` binary and no JAF modules.
-- For actual JAF source work, see [source audit](SOURCE_AUDIT.md): the earlier original Run128 workflow identified the devhunter1 5.15.211 M14 tree and build recipe. **This latest ZIP has not been matched to a specific upstream Project-24 release/workflow/source SHA.**
+- For actual JAF source work, see [source audit](SOURCE_AUDIT.md): the earlier original Run128 workflow identified the devhunter1 5.15.211 M14 tree and build recipe. **The user identifies it as Run130, and that tag's builder workflow has been inspected; **release asset hash and exact external source SHA are not yet independently verified**.**
 - Do not present this binary comparison as a validation of flashing, actual running features or module compatibility.
