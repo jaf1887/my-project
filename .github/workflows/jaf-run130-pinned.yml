@@ -3,6 +3,11 @@ name: JAF Run130 Pinned Experimental Build
 # Manual only; never flashes a device and never creates a GitHub release.
 on:
   workflow_dispatch:
+    inputs:
+      exynos_alignment:
+        description: 'Experimental clear_page alignment (requires new boot and performance tests)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,6 +66,16 @@ jobs:
           PATCHES_SHA="$PATCHES_SHA" \
             bash scripts/integrate-run130.sh kernel-src
 
+      - name: Apply optional reviewed Exynos alignment patch
+        if: ${{ inputs.exynos_alignment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C kernel-src apply --check "$GITHUB_WORKSPACE/patches/exynos/clear-page.patch"
+          git -C kernel-src apply "$GITHUB_WORKSPACE/patches/exynos/clear-page.patch"
+          printf 'clear_page_alignment=16-byte\n' > work/reports/exynos-options.txt
+          sha256sum patches/exynos/clear-page.patch >> work/reports/exynos-options.txt
+
       - name: Configure JAF identity and required features
         shell: bash
         run: |
@@ -73,7 +88,10 @@ jobs:
             --disable LOCALVERSION_AUTO \
             --set-str LOCALVERSION '@jaf1887' \
             --enable KSU --enable KSU_SUSFS \
-            --enable BBG --enable MODULES --enable MODVERSIONS
+            --enable KSU_SUSFS_SUS_PATH --enable KSU_SUSFS_SUS_MOUNT \
+            --enable KSU_SUSFS_SUS_KSTAT --enable KSU_SUSFS_SUS_MAP \
+            --enable BBG --disable BBG_BLOCK_BOOT --disable BBG_BLOCK_RECOVERY \
+            --enable MODULES --enable MODVERSIONS
           lsm="$(sed -n 's/^CONFIG_LSM="\([^"]*\)"/\1/p' "$cfg")"
           [[ -n "$lsm" ]] || { echo 'Missing CONFIG_LSM' >&2; exit 3; }
           if [[ ",$lsm," != *",baseband_guard,"* ]]; then
