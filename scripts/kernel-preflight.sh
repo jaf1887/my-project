@@ -15,7 +15,7 @@ check_enabled() {
 }
 
 missing=0
-for key in CONFIG_ARM64 CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_BBG CONFIG_MODULES CONFIG_MODVERSIONS; do
+for key in CONFIG_ARM64 CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SUS_MAP CONFIG_ARCH_EXYNOS CONFIG_BBG CONFIG_MODULES CONFIG_MODVERSIONS; do
   check_enabled "$key"
 done
 if ! grep -qx 'CONFIG_LOCALVERSION="@jaf1887"' "$CONFIG"; then
@@ -30,6 +30,13 @@ if ! grep '^CONFIG_LSM=' "$CONFIG" | grep -q 'baseband_guard'; then
 else
   echo 'OK      baseband_guard registered'
 fi
+# Do not block recovery or normal boot while introducing BBG changes.
+for key in CONFIG_BBG_BLOCK_BOOT CONFIG_BBG_BLOCK_RECOVERY; do
+  if grep -qxF "${key}=y" "$CONFIG"; then
+    echo "UNSAFE  ${key}=y (recovery access must remain available)"
+    missing=1
+  fi
+done
 printf '\nDroidspaces feature gap (not automatically enabled; assess kABI first):\n'
 for key in CONFIG_CGROUP_PIDS CONFIG_CGROUP_DEVICE CONFIG_BRIDGE_NETFILTER CONFIG_NF_TABLES; do
   if grep -qxF "${key}=y" "$CONFIG"; then
